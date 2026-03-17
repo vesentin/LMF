@@ -16,11 +16,10 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
 
 # Install envoy
 RUN apt update
-RUN curl -sL 'https://deb.dl.getenvoy.io/public/gpg.8115BA8E629CC074.key' | gpg --dearmor -o /usr/share/keyrings/getenvoy-keyring.gpg
-RUN echo a077cb587a1b622e03aa4bf2f3689de14658a9497a9af2c427bba5f4cc3c4723 /usr/share/keyrings/getenvoy-keyring.gpg | sha256sum --check
-RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/getenvoy-keyring.gpg] https://deb.dl.getenvoy.io/public/deb/ubuntu $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/getenvoy.list
+RUN curl -fsSL https://apt.envoyproxy.io/signing.key | gpg --dearmor -o /usr/share/keyrings/envoy-keyring.gpg
+RUN echo "deb [signed-by=/usr/share/keyrings/envoy-keyring.gpg] https://apt.envoyproxy.io jammy main" | tee /etc/apt/sources.list.d/envoy.list
 RUN apt update
-RUN apt install -y getenvoy-envoy
+RUN apt install -y envoy
 
 
 COPY src/requirements.txt LMF/src/
