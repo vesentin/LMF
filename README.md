@@ -48,11 +48,11 @@ The following steps outline how to run the LMF
 git clone https://github.com/LucaPetrucci/LMF.git
 # enter in the directory
 cd LMF
-docker build -f Dockerfile -t lmf:latest
+docker build -f src/Dockerfile -t lmf:latest .
 ```
 ### 2. Build the Docker Image
 ```
-docker build -f Dockerfile -t lmf:latest
+docker build -f src/Dockerfile -t lmf:latest .
 ```
 ### 3. Run the LMF
 There are two available methods for running the LMF within the 5G core. Whatever method is chosen, the configuration file `LMF/src/config.py` must be updated according to your network setup. This file will be mounted as volume to the LMF Docker Dontainer and used by the LMF Python Script.
