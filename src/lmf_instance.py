@@ -286,7 +286,6 @@ class Lmf():
     def cancel_location(self):
         pass
 
-
 def send_nonUEassociated(_encoded_message):
     _url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/non-ue-n2-messages/transfer"
     boundary = str(uuid.uuid4())

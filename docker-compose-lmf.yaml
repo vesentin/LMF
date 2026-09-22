@@ -13,19 +13,20 @@ services:
       - "9090:9090/sctp"
       - "9091:9091/udp"
       - "4321:4321"
+      - "65001:65001" #exposing supl server port to make it reachable from the outside
     volumes:
       - ./envoy_proxy/envoy.yaml:/etc/envoy/envoy.yaml
-      - ./src/config.py:/LMF/src/config.py
-      # - ./src:/LMF/src
+      - ${OAI_CONF_DIR}/ue.nr.prs.fr1.106prb.conf:/LMF/prs.conf:ro
+
     restart: on-failure
     networks:
       privnet:
         aliases:
           - lmf_net.org
-        ipv4_address: 10.100.200.130
+        ipv4_address: 192.168.70.140
 
 networks:
   privnet:
     external: true
-    name: free5gc-compose_privnet
-    # name: demo-oai-public-net
+   # name: free5gc-compose_privnet
+    name: demo-oai-public-net

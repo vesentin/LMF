@@ -30,7 +30,24 @@ def decodeLPP(LPP_message_ANS1):
     except:
         log.logger_LPP.error('Error during decoding the LPP message')
         return None
-
+#unused, now the ue decodes the whole message
+def encode_nr_dl_prs_assistance_data(assistance_data_dict):
+    """
+    Encode just the NR-DL-PRS-AssistanceData-r16 IE to UPER bytes,
+    independent of the full LPP message envelope. Used by SUPL transports
+    that need to forward only the bare IE to the UE (matching what the
+    posSIB broadcast path already delivers), rather than a full
+    transactional LPP message.
+    """
+    try:
+        log.logger_LPP.info('Encoding NR-DL-PRS-AssistanceData-r16')
+        IE = LPP.LPP_PDU_Definitions.NR_DL_PRS_AssistanceData_r16
+        IE.set_val(assistance_data_dict)
+        return IE.to_uper()
+    except Exception as e:
+        log.logger_LPP.error(f'Error encoding NR-DL-PRS-AssistanceData-r16: {e}')
+        return None
+#---------------------------------------------------------------------
 
 def extractPosModeSupported(mode_received,otdoa=False):
     if otdoa:
@@ -446,75 +463,99 @@ def handle_abort(body):
     return result
 
 
+def ensure_session_for_lpp(lpp_message_asn, default_method_preference=None):
+    """
+    Peek at an incoming LPP message's transaction number and create an
+    LMF session for it if one doesn't already exist. This is LMF/LPP-layer
+    bookkeeping, not transport logic -- transports (SUPL, AMF/HTTP, etc.)
+    should call this rather than constructing sessions themselves.
+    """
+    peeked = decodeLPP(lpp_message_asn)
+    transaction_number = peeked['transactionID']['transactionNumber']
+
+    try:
+        return lmf.Lmf().get(transaction_number)
+    except KeyError:
+        jdata = {
+            'correlationID': f'supl-session-{transaction_number}',
+            'locationQoS': {'responseTime': 'LOW_DELAY', 'hAccuracy': 10, 'verticalRequested': False},
+            'supi': 'unknown-set'
+        }
+        lmf.Lmf().create(jdata, transaction_number, default_method_preference or [])
+        return lmf.Lmf().get(transaction_number)
+
 def handleLPP(lpp_message_asn):
+    """
+    CHANGED: this function now RETURNS the encoded LPP response bytes
+    (or None if there is nothing to send back) instead of sending them
+    itself. This makes it transport-agnostic: the caller (AMF/HTTP path,
+    SUPL path, etc.) decides how to actually deliver the bytes.
+    """
     endFlag = False
     abortFlag = False
     log.logger_LPP.info('Start handling a LPP message')
     lpp_message = decodeLPP(lpp_message_asn)
-    
+
     if lpp_message is None:
-        return "ERROR"
+        return None, None  # CHANGED: was "ERROR". lmf_instance doesn't exist yet at this point.
 
     log.logger_LPP.debug(f"------------ lpp_message: {lpp_message}")
 
     if 'acknowledgement' in lpp_message:
-        acknowledgement= lpp_message['acknowledgement']
+        acknowledgement = lpp_message['acknowledgement']
         if acknowledgement['ackRequested']:
             log.logger_LPP.info(f'ACK Requested for this LPP messages')
         else:
             log.logger_LPP.info(f'ACK NOT Requested for this LPP messages')
         if 'ackIndicator' in acknowledgement:
             log.logger_LPP.info(f'Received the ACK for the SN {acknowledgement["ackIndicator"]}')
-        
-        fields = ['transactionID', 'endTransaction','sequenceNumber', 'lpp-MessageBody']
+
+        fields = ['transactionID', 'endTransaction', 'sequenceNumber', 'lpp-MessageBody']
         if not all(field in lpp_message for field in fields):
             log.logger_LPP.info(f'Received only the ACK')
-            return "OK"
+            return None, None  # CHANGED: was "OK". lmf_instance doesn't exist yet at this point.
     else:
-        fields = ['transactionID', 'endTransaction','sequenceNumber', 'lpp-MessageBody']
+        fields = ['transactionID', 'endTransaction', 'sequenceNumber', 'lpp-MessageBody']
         if not all(field in lpp_message for field in fields):
             log.logger_LPP.error(f'Missing fields in LPP messages')
-            return "ERROR"
+            return None, None  # CHANGED: was "ERROR". lmf_instance doesn't exist yet at this point.
 
     transaction_idR = lpp_message['transactionID']
     replay_sequence_number = lpp_message['sequenceNumber']
-    acknowledgement= lpp_message['acknowledgement']
+    acknowledgement = lpp_message['acknowledgement']
     end_transactionR = lpp_message['endTransaction']
-    ack_requested=acknowledgement['ackRequested']
-    
+    ack_requested = acknowledgement['ackRequested']
+
     lmf_instance = lmf.Lmf().get(transaction_idR['transactionNumber'])
-    
+
     if replay_sequence_number in lmf_instance.sequence_number_list:
         log.logger_LPP.warning(f'The LPP messages related to the sequence number {replay_sequence_number} is already received')
-        return
+        return None, lmf_instance  # CHANGED: was bare "return". lmf_instance already exists here.
     else:
         log.logger_LPP.debug(f'Sequence number {replay_sequence_number} added to the list of received sequence number')
         lmf_instance.update_SN_received(replay_sequence_number)
-
 
     log.logger_LPP.debug(f"LPP transaction id: {transaction_idR}")
     log.logger_LPP.debug(f'LPP Request Sequence Number:{replay_sequence_number}')
     log.logger_LPP.debug(f'LPP transaction id:{transaction_idR}')
     log.logger_LPP.debug(f'LPP end transaction:{end_transactionR}')
 
-
-
-    #chek the lpp message body
+    # check the lpp message body
     if 'lpp-MessageBody' in lpp_message:
         lpp_message_body = lpp_message['lpp-MessageBody'][0]
 
         if lpp_message['lpp-MessageBody'][0] == 'c1':
             lpp_message_body = lpp_message['lpp-MessageBody'][1]
-            first_key= lpp_message_body[0]
-            first_value= lpp_message_body[1]
+            first_key = lpp_message_body[0]
+            first_value = lpp_message_body[1]
             log.logger_LPP.debug(f'LPP Message Body Type: {first_key}')
             log.logger_LPP.debug(f'LPP Message Body Value: {first_value}')
-          
+
             match first_key:
                 case 'requestCapabilities':
                     log.logger_LPP.error(f'This type of message {first_key} is not possible to receive')
-                    ResponseLPP_Message_body= lpp_gen.generate_lpp_error("incorrectDataValue")
-                    endTransaction=True
+                    ResponseLPP_Message_body = lpp_gen.generate_lpp_error("incorrectDataValue")
+                    endTransaction = True
 
                 case 'provideCapabilities':
                     log.logger_LPP.info(f'Handling {first_key} type of LPP message')
@@ -522,88 +563,85 @@ def handleLPP(lpp_message_asn):
                         mode_method_supported = handle_provide_capabilities(first_value)
                     except:
                         log.logger_LPP.error('Error during handle_provide_capabilities function')
-                        ResponseLPP_Message_body= lpp_gen.generate_lpp_error("undefined")
-                        endTransaction=True
-                    
-                    # methods_preference from the DB
-                    methods_preference=lmf_instance.method_preference
+                        ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
+                        endTransaction = True
+
+                    methods_preference = lmf_instance.method_preference
 
                     for method in methods_preference:
                         for i in mode_method_supported:
                             if method in i['method']:
-                                mode_method_selected = {'mode': i['mode'][0], 'method': method }
+                                mode_method_selected = {'mode': i['mode'][0], 'method': method}
                                 break
                             else:
                                 mode_method_selected = {'mode': 'error', 'method': 'error'}
                         if mode_method_selected["mode"] != "error":
-                            break                            
+                            break
 
                     log.logger_LPP.info(f'Method select {mode_method_selected["method"]} with mode: {mode_method_selected["mode"]}')
                     lmf_instance.set_method_mode(mode_method_selected)
-                    
 
-                     # we take the QoS from the DB
                     QoS = lmf_instance.QoS
-                    configuration={'QoS': QoS}
+                    configuration = {'QoS': QoS}
 
-                    if mode_method_selected["mode"]=='error':
-                        ResponseLPP_Message_body= lpp_gen.generate_lpp_error("undefined")
-                        endTransaction=True
-                    elif mode_method_selected["mode"]=='Network-Based':
-                        ResponseLPP_Message_body={}
+                    if mode_method_selected["mode"] == 'error':
+                        ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
+                        endTransaction = True
+                    elif mode_method_selected["mode"] == 'Network-Based':
+                        ResponseLPP_Message_body = {}
                     else:
-                        ResponseLPP_Message_body= lpp_gen.generate_lpp_request_location_request(mode_method_selected['method'],mode_method_selected["mode"],configuration)
-                        endTransaction=False
+                        ResponseLPP_Message_body = lpp_gen.generate_lpp_request_location_request(mode_method_selected['method'], mode_method_selected["mode"], configuration)
+                        endTransaction = False
 
-                case 'requestAssistanceData': 
+                case 'requestAssistanceData':
                     log.logger_LPP.info(f'Handling {first_key} type of LPP message')
                     try:
                         assistancedata = handle_request_assistance_data(first_value)
                     except:
                         log.logger_LPP.error('Error during handle_request_assistance_data function')
-                        ResponseLPP_Message_body= lpp_gen.generate_lpp_error("undefined")
-                        endTransaction=True                  
+                        ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
+                        endTransaction = True
                     if assistancedata == 'error':
                         log.logger_LPP.error('Error during handle_request_assistance_data function')
-                        ResponseLPP_Message_body= lpp_gen.generate_lpp_error("undefined")
-                        endTransaction=True
+                        ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
+                        endTransaction = True
                     else:
-                        ResponseLPP_Message_body=assistancedata
-                        endTransaction=True
+                        ResponseLPP_Message_body = assistancedata
+                        endTransaction = True
 
-                case 'provideAssistanceData': 
+                case 'provideAssistanceData':
                     log.logger_LPP.error(f'This type of message {first_key} is not possible to receive')
-                    ResponseLPP_Message_body= lpp_gen.generate_lpp_error("incorrectDataValue")
-                    endTransaction=True
+                    ResponseLPP_Message_body = lpp_gen.generate_lpp_error("incorrectDataValue")
+                    endTransaction = True
 
                 case 'requestLocationInformation':
                     log.logger_LPP.error(f'This type of message {first_key} is not possible to receive')
-                    ResponseLPP_Message_body= lpp_gen.generate_lpp_error("incorrectDataValue")
-                    endTransaction=True
+                    ResponseLPP_Message_body = lpp_gen.generate_lpp_error("incorrectDataValue")
+                    endTransaction = True
 
                 case 'provideLocationInformation':
                     log.logger_LPP.info(f'Handling {first_key} type of LPP message')
-
                     try:
                         result = handle_provide_location_information(first_value)
                     except:
                         log.logger_LPP.error('Error during handle_provide_location_information function')
-                        ResponseLPP_Message_body= lpp_gen.generate_lpp_error("undefined")
-                        endTransaction=True    
-
-                    if result== 'error':
                         ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
-                        endTransaction=True
+                        endTransaction = True
+
+                    if result == 'error':
+                        ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
+                        endTransaction = True
                     else:
-                        endFlag=True
+                        endFlag = True
+
                 case 'abort':
                     log.logger_LPP.info(f'Handling {first_key} type of LPP message')
                     try:
                         handle_abort(first_value)
                     except:
-                        log.logger_LPP.error('Error during handle_abort function')                                            
-                    abortFlag=True
-                    endTransaction=True
+                        log.logger_LPP.error('Error during handle_abort function')
+                    abortFlag = True
+                    endTransaction = True
 
                 case 'error':
                     log.logger_LPP.info(f'Handling {first_key} type of LPP message')
@@ -611,76 +649,76 @@ def handleLPP(lpp_message_asn):
                         ResponseLPP_Message_body = handle_error(first_value)
                     except:
                         log.logger_LPP.error('Error during handle_error function')
-                        abortFlag=True
-                    endTransaction=True
+                        abortFlag = True
+                    endTransaction = True
 
                 case 'spare7', 'spare6', 'spare5', 'spare4', 'spare3', 'spare2', 'spare1', 'spare0':
-                    ResponseLPP_Message_body= lpp_gen.generate_lpp_error("incorrectDataValue")
-                    endTransaction=True
+                    ResponseLPP_Message_body = lpp_gen.generate_lpp_error("incorrectDataValue")
+                    endTransaction = True
                     pass
                 case _:
                     log.logger_LPP.error(f'This type of message {first_key} is not possible to receive')
-                    ResponseLPP_Message_body= lpp_gen.generate_lpp_error("incorrectDataValue")
-                    endTransaction=True
+                    ResponseLPP_Message_body = lpp_gen.generate_lpp_error("incorrectDataValue")
+                    endTransaction = True
 
-        else: 
+        else:
             log.logger_LPP.error('Error on the structure of LPP message')
             ResponseLPP_Message_body = lpp_gen.generate_lpp_error("incorrectDataValue")
-            endTransaction=True
+            endTransaction = True
     else:
         log.logger_LPP.error('Missing the LPP message body')
         ResponseLPP_Message_body = lpp_gen.generate_lpp_error("incorrectDataValue")
-        endTransaction=True
-    
+        endTransaction = True
 
-    if abortFlag==True:
+    if abortFlag == True:
         log.logger_LPP.warning('END ESTIMATION PROCESS DUE TO ABORT PROCEDURE')
+        response_bytes = None  # CHANGED: will hold the bytes to return, default None
         if ack_requested:
             ack_sequence_number = replay_sequence_number
             lmf_instance.sequence_number += 1
-            LPP_MESSAGE= lpp_gen.generate_LPP__with_ACK(transaction_idR['transactionNumber'], end_transactionR, lmf_instance.sequence_number, ack_sequence_number)
-            LPP_MESSAGE_ENCODED= encodeLPP(LPP_MESSAGE)
+            LPP_MESSAGE = lpp_gen.generate_LPP__with_ACK(transaction_idR['transactionNumber'], end_transactionR, lmf_instance.sequence_number, ack_sequence_number)
+            response_bytes = encodeLPP(LPP_MESSAGE)  # CHANGED: was LPP_MESSAGE_ENCODED, then sent
             log.logger_LPP.debug(f"LPP_Handler - sequence_number: {lmf_instance.sequence_number}")
-            lmf.send_message(LPP_MESSAGE_ENCODED, proto="5gnas", imsi=lmf_instance.imsi,lcs_correlation=lmf_instance.lcs_corr_id)  
-        # send the notify to the thread that respond to the initial HTTP request with error
+            # CHANGED: removed lmf.send_message(...) call here -- caller sends it now
         lmf.estimation_procedure_error({'transaction_number': transaction_idR["transactionNumber"]})
-        return "ABORT"
-    
-    if endFlag== True:
+        return response_bytes, lmf_instance  # CHANGED: was "return 'ABORT'"
+
+    if endFlag == True:
+        response_bytes = None  # CHANGED
         if ack_requested:
             ack_sequence_number = replay_sequence_number
             lmf_instance.sequence_number += 1
-            LPP_MESSAGE= lpp_gen.generate_LPP__with_ACK(transaction_idR['transactionNumber'], end_transactionR, lmf_instance.sequence_number, ack_sequence_number)
-            LPP_MESSAGE_ENCODED= encodeLPP(LPP_MESSAGE)
+            LPP_MESSAGE = lpp_gen.generate_LPP__with_ACK(transaction_idR['transactionNumber'], end_transactionR, lmf_instance.sequence_number, ack_sequence_number)
+            response_bytes = encodeLPP(LPP_MESSAGE)  # CHANGED
             log.logger_LPP.debug(f"LPP_Handler - sequence_number: {lmf_instance.sequence_number}")
-            lmf.send_message(LPP_MESSAGE_ENCODED, proto="5gnas", imsi=lmf_instance.imsi,lcs_correlation=lmf_instance.lcs_corr_id)  
-        # the estimation is conclude, send the notify to the thread that respond to the initial HTTP request
+            # CHANGED: removed lmf.send_message(...) call here
         log.logger_LPP.info('END ESTIMATION PROCESS DUE TO ESTIMATION COMPLETE')
         log.logger_LPP.info(f'Estimation position:{result}')
         result.update({'transaction_number': transaction_idR["transactionNumber"]})
         lmf.estimation_procedure_completed(result)
-        return "OK"
-    
-    elif ResponseLPP_Message_body=={}:
+        return response_bytes, lmf_instance  # CHANGED: was "return 'OK'"
+
+    elif ResponseLPP_Message_body == {}:
+        response_bytes = None  # CHANGED
         if ack_requested:
             ack_sequence_number = replay_sequence_number
             lmf_instance.sequence_number += 1
             LPP_MESSAGE = lpp_gen.generate_LPP__with_ACK(transaction_idR['transactionNumber'], True, lmf_instance.sequence_number, ack_sequence_number)
-            LPP_MESSAGE_ENCODED = encodeLPP(LPP_MESSAGE)
+            response_bytes = encodeLPP(LPP_MESSAGE)  # CHANGED
             log.logger_LPP.info(f"LPP_Handler - sequence_number: {lmf_instance.sequence_number}")
-            lmf.send_message(LPP_MESSAGE_ENCODED, proto="5gnas", imsi=lmf_instance.imsi,lcs_correlation=lmf_instance.lcs_corr_id)  
-        # network based mode, no more lpp messages
+            # CHANGED: removed lmf.send_message(...) call here
         log.logger_LPP.info(f'Network Based mode initiate')
-        # generate and send nrrpa message
-        # Info to be used in the NRPPa message and fix to the moment
-        # TODO -> to be updated with the values from the config file
-        RequestedSRSTx = {'resourceType': 'aperiodic','bandwidth':  ('fR1', 'mHz100')}
-        UEReportingInfo = {'reportingAmount': 'ma1','reportingInterval': 'none'}
+        RequestedSRSTx = {'resourceType': 'aperiodic', 'bandwidth': ('fR1', 'mHz100')}
+        UEReportingInfo = {'reportingAmount': 'ma1', 'reportingInterval': 'none'}
         UE_TEG_Info_Request = 'onDemand'
 
-        NRPPa_MESSAGE_=nrppa_gen.PositioningInformationRequest(transaction_idR["transactionNumber"],RequestedSRSTx,UEReportingInfo,UE_TEG_Info_Request)
-        NRPPa_MESSAGE_ENCODED= NRPPa_handler.encodeNRPPa(NRPPa_MESSAGE_)
+        NRPPa_MESSAGE_ = nrppa_gen.PositioningInformationRequest(transaction_idR["transactionNumber"], RequestedSRSTx, UEReportingInfo, UE_TEG_Info_Request)
+        NRPPa_MESSAGE_ENCODED = NRPPa_handler.encodeNRPPa(NRPPa_MESSAGE_)
+        # NOTE: this NRPPa send is UNCHANGED -- it goes to the gNB, not the UE,
+        # so it is not part of the LPP response and is left as a direct send.
         lmf.send_message(NRPPa_MESSAGE_ENCODED, proto="ngap", imsi=lmf_instance.imsi)
+        return response_bytes, lmf_instance  # CHANGED: this branch previously had no explicit return -- now explicit
+
     else:
         log.logger_LPP.debug(f'ResponseLPP_Message_body: {ResponseLPP_Message_body}')
 
@@ -692,11 +730,11 @@ def handleLPP(lpp_message_asn):
             lmf_instance.sequence_number += 1
             LPP_MESSAGE = lpp_gen.generate_LPP_MESSAGE(transaction_idR['transactionNumber'], endTransaction, lmf_instance.sequence_number, ResponseLPP_Message_body)
         log.logger_LPP.debug(f"LPP_Handler - sequence_number: {lmf_instance.sequence_number}")
-        LPP_MESSAGE_ENCODED = encodeLPP(LPP_MESSAGE)
+        response_bytes = encodeLPP(LPP_MESSAGE)  # CHANGED: was LPP_MESSAGE_ENCODED
 
-        if LPP_MESSAGE_ENCODED is None:
+        if response_bytes is None:
             ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
             LPP_MESSAGE = lpp_gen.generate_LPP__with_ACK(transaction_idR['transactionNumber'], endTransaction, lmf_instance.sequence_number, ack_sequence_number, ResponseLPP_Message_body)
-            LPP_MESSAGE_ENCODED = encodeLPP(LPP_MESSAGE)
-        lmf.send_message(LPP_MESSAGE_ENCODED, proto="5gnas", imsi=lmf_instance.imsi,lcs_correlation=lmf_instance.lcs_corr_id)  
-    return "OK"
+            response_bytes = encodeLPP(LPP_MESSAGE)  # CHANGED
+        # CHANGED: removed lmf.send_message(...) call here -- caller sends it now
+        return response_bytes, lmf_instance  # CHANGED: was "return 'OK'"

@@ -1,5 +1,6 @@
 import custom_log as log
 import config
+from prs_config import read_prs_config
 
 # FUNCTIONS FOR GENERATING THE LPP MESSAGES USED BY THE LMF
 # GENERATE LPP ABORT MESSAGE
@@ -37,79 +38,249 @@ def generate_lpp_request_capabilities(methods):
 # GENERATE LPP PROVIDE ASSISTANCE DATA FROM THE METHOD USED
 # For the moment the assistance data response is fixed and Multi-RTT and TDOA are supported
 # TODO fix the response based on the method and the capabilities of the networks
-def generate_lpp_provide_assistance_data(method):
+def _prs_bandwidth(num_rb):
+    if num_rb < 24 or num_rb > 272 or (num_rb - 24) % 4 != 0:
+        raise ValueError(
+            f"PRS NumRB {num_rb} is not representable by "
+            "LPP dl-PRS-ResourceBandwidth-r16"
+        )
+
+    return (num_rb - 20) // 4
+
+def _prs_comb_size(comb_size):
+    return {
+        2: 'n2',
+        4: 'n4',
+        6: 'n6',
+        12: 'n12'
+    }[comb_size]
+
+
+def _prs_num_symbols(num_symbols):
+    return {
+        2: 'n2',
+        4: 'n4',
+        6: 'n6',
+        12: 'n12'
+    }[num_symbols]
+
+
+def _prs_repetition(repetition):
+    return {
+        2: 'n2',
+        4: 'n4',
+        6: 'n6',
+        8: 'n8',
+        16: 'n16',
+        32: 'n32'
+    }.get(repetition)
+
+
+def _prs_time_gap(time_gap):
+    return {
+        1: 'n1',
+        2: 'n2',
+        4: 'n4',
+        8: 'n8',
+        16: 'n16',
+        32: 'n32'
+    }[time_gap]
+
+
+def _prs_muting_repetition(repetition):
+    return {
+        1: 'n1',
+        2: 'n2',
+        4: 'n4',
+        8: 'n8'
+    }[repetition]
+
+
+def _prs_comb_and_re_offset(comb_size, re_offset):
+    """
+    LPP combines CombSize and REOffset into one CHOICE.
+    """
+    return (
+        f'n{comb_size}-r16',
+        re_offset
+    )
+
+
+def _build_prs_resource(cfg, resource_id):
+    return {
+        'nr-DL-PRS-ResourceID-r16': resource_id,
+        'dl-PRS-SequenceID-r16': cfg['NPRS_ID'][resource_id],
+        'dl-PRS-CombSizeN-AndReOffset-r16':
+            _prs_comb_and_re_offset(
+                cfg['CombSize'],
+                cfg['REOffset'][resource_id]
+            ),
+        'dl-PRS-ResourceSlotOffset-r16':
+            cfg['PRSResourceOffset'][resource_id],
+        'dl-PRS-ResourceSymbolOffset-r16':
+            cfg['SymbolStart'][resource_id],
+
+        # We do not have QCL information in prs.conf.
+        # Keep the existing value for now.
+        'dl-PRS-QCL-Info-r16': (
+            'dl-PRS-r16',
+            {
+                'qcl-DL-PRS-ResourceID-r16': 3,
+                'qcl-DL-PRS-ResourceSetID-r16': 4
+            }
+        )
+    }
+
+
+def _prs_periodicity(period, offset, scs=0):
+    if offset >= period:
+        raise ValueError(
+            f"PRS resource-set offset {offset} must be smaller than period {period}"
+        )
+
+    periods = {
+        0: {4, 5, 8, 10, 16, 20, 32, 40, 64, 80, 160, 320, 640,
+            1280, 2560, 5120, 10240},
+
+        1: {8, 10, 16, 20, 32, 40, 64, 80, 128, 160, 320, 640,
+            1280, 2560, 5120, 10240, 20480},
+
+        2: {16, 20, 32, 40, 64, 80, 128, 160, 256, 320, 640,
+            1280, 2560, 5120, 10240, 20480, 40960},
+
+        3: {32, 40, 64, 80, 128, 160, 256, 320, 512, 640, 1280,
+            2560, 5120, 10240, 20480, 40960},
+    }
+
+    scs_names = {
+        0: 'scs15-r16',
+        1: 'scs30-r16',
+        2: 'scs60-r16',
+        3: 'scs120-r16',
+    }
+
+    if scs not in periods:
+        raise ValueError(f"Unsupported PRS SCS value: {scs}")
+
+    if period not in periods[scs]:
+        raise ValueError(
+            f"PRS period {period} is invalid for SCS value {scs}"
+        )
+
+    return (scs_names[scs], (f'n{period}-r16', offset))
+
+def _build_prs_resource_set(cfg, resource_set_id=4, scs=0):
+    """
+    Build one LPP NR-DL-PRS ResourceSet from one OAI PRS configuration.
+    """
+
+    period = cfg['PRSResourceSetPeriod'][0]
+    offset = cfg['PRSResourceSetPeriod'][1]
+
+    resource_set = {
+        'nr-DL-PRS-ResourceSetID-r16': resource_set_id,
+
+        'dl-PRS-Periodicity-and-ResourceSetSlotOffset-r16':
+            _prs_periodicity(period, offset, scs),
+
+        'dl-PRS-NumSymbols-r16':
+            _prs_num_symbols(cfg['NumPRSSymbols'][0]),
+
+        'dl-PRS-ResourcePower-r16': 33,
+
+        'dl-PRS-ResourceList-r16': [
+            _build_prs_resource(cfg, i)
+            for i in range(cfg['NumPRSResources'])
+        ]
+    }
+
+    repetition = cfg['PRSResourceRepetition']
+    if repetition != 1:
+        resource_set['dl-PRS-ResourceRepetitionFactor-r16'] = \
+            _prs_repetition(repetition)
+
+    time_gap = cfg['PRSResourceTimeGap']
+    if time_gap != 1:
+        resource_set['dl-PRS-ResourceTimeGap-r16'] = \
+            _prs_time_gap(time_gap)
+
+    return resource_set
+
+def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
 
     match method:
+
         case 'nr-Multi-RTT-RequestAssistanceData-r16':
+
+            prs_configs = read_prs_config()
+            cfg = prs_configs[0]
+
+            resource_set = _build_prs_resource_set(
+                cfg,
+                resource_set_id=4,
+                scs=0
+            )
+
             AssistanceDataRTT = {
                 'nr-DL-PRS-AssistanceData-r16': {
                     'nr-DL-PRS-ReferenceInfo-r16': {
                         'dl-PRS-ID-r16': 11,
                         'nr-DL-PRS-ResourceID-List-r16': [3, 4]
                     },
+
                     'nr-DL-PRS-AssistanceDataList-r16': [
                         {
                             'nr-DL-PRS-PositioningFrequencyLayer-r16': {
                                 'dl-PRS-SubcarrierSpacing-r16': 'kHz15',
-                                'dl-PRS-ResourceBandwidth-r16': 45,
+                                'dl-PRS-ResourceBandwidth-r16': 21,
                                 'dl-PRS-StartPRB-r16': 22,
                                 'dl-PRS-PointA-r16': 444,
                                 'dl-PRS-CombSizeN-r16': 'n2',
                                 'dl-PRS-CyclicPrefix-r16': 'normal'
                             },
+
                             'nr-DL-PRS-AssistanceDataPerFreq-r16': [
                                 {
                                     'dl-PRS-ID-r16': 44,
+
                                     'nr-PhysCellID-r16': 33,
+
                                     'nr-CellGlobalID-r16': {
-                                        'mcc-r15': [int(config.mcc[0]), int(config.mcc[1]), int(config.mcc[2])],
-                                        'mnc-r15': [int(config.mnc[0]), int(config.mnc[1])],
-                                        'nr-cellidentity-r15': (5,36) 
+                                        'mcc-r15': [
+                                            int(config.mcc[0]),
+                                            int(config.mcc[1]),
+                                            int(config.mcc[2])
+                                        ],
+                                        'mnc-r15': [
+                                            int(config.mnc[0]),
+                                            int(config.mnc[1])
+                                        ],
+                                        'nr-cellidentity-r15': (5, 36)
                                     },
+
                                     'nr-ARFCN-r16': 445,
+
                                     'nr-DL-PRS-SFN0-Offset-r16': {
                                         'sfn-Offset-r16': 44,
                                         'integerSubframeOffset-r16': 5
                                     },
+
                                     'nr-DL-PRS-ExpectedRSTD-r16': 4,
+
                                     'nr-DL-PRS-ExpectedRSTD-Uncertainty-r16': 55,
+
                                     'nr-DL-PRS-Info-r16': {
                                         'nr-DL-PRS-ResourceSetList-r16': [
-                                            {
-                                                'nr-DL-PRS-ResourceSetID-r16': 4,
-                                                'dl-PRS-Periodicity-and-ResourceSetSlotOffset-r16': ('scs30-r16', ('n8-r16', 2)),
-                                                'dl-PRS-ResourceRepetitionFactor-r16': 'n2',
-                                                'dl-PRS-NumSymbols-r16': 'n2',
-                                                'dl-PRS-MutingOption1-r16': {
-                                                    'dl-prs-MutingBitRepetitionFactor-r16': 'n2',
-                                                    'nr-option1-muting-r16': ('po8-r16', (1,8) )
-                                                },
-                                                'dl-PRS-MutingOption2-r16': {
-                                                    'nr-option2-muting-r16': ('po8-r16', (1,8) )                                                },
-                                                'dl-PRS-ResourcePower-r16': 33,
-                                                'dl-PRS-ResourceList-r16': [
-                                                    {
-                                                        'nr-DL-PRS-ResourceID-r16': 4,
-                                                        'dl-PRS-SequenceID-r16': 55,
-                                                        'dl-PRS-CombSizeN-AndReOffset-r16': ('n2-r16', 1),
-                                                        'dl-PRS-ResourceSlotOffset-r16': 2,
-                                                        'dl-PRS-ResourceSymbolOffset-r16': 3,
-                                                        'dl-PRS-QCL-Info-r16': (
-                                                            'dl-PRS-r16', {
-                                                                'qcl-DL-PRS-ResourceID-r16': 3,
-                                                                'qcl-DL-PRS-ResourceSetID-r16': 4
-                                                            }
-                                                        )
-                                                    }
-                                                ]
-                                            }
+                                            resource_set
                                         ]
                                     },
+
                                     'prs-OnlyTP-r16': 'true'
                                 }
                             ]
                         }
                     ],
+
                     'nr-SSB-Config-r16': [
                         {
                             'nr-PhysCellID-r16': 33,
@@ -117,23 +288,32 @@ def generate_lpp_provide_assistance_data(method):
                             'ss-PBCH-BlockPower-r16': 44,
                             'halfFrameIndex-r16': 1,
                             'ssb-periodicity-r16': 'ms5',
-                            'ssb-PositionsInBurst-r16': ('mediumBitmap-r16', (1,8)),
+                            'ssb-PositionsInBurst-r16': (
+                                'mediumBitmap-r16',
+                                (1, 8)
+                            ),
                             'ssb-SubcarrierSpacing-r16': 'kHz30',
                             'sfn-SSB-Offset-r16': 2
                         }
                     ]
                 },
+
                 'nr-SelectedDL-PRS-IndexList-r16': [
                     {
                         'nr-SelectedDL-PRS-FrequencyLayerIndex-r16': 1,
+
                         'nr-SelectedDL-PRS-IndexListPerFreq-r16': [
                             {
                                 'nr-SelectedTRP-Index-r16': 1,
+
                                 'dl-SelectedPRS-ResourceSetIndexList-r16': [
                                     {
                                         'nr-DL-SelectedPRS-ResourceSetIndex-r16': 1,
+
                                         'dl-SelectedPRS-ResourceIndexList-r16': [
-                                            {'nr-DL-SelectedPRS-ResourceIdIndex-r16': 1}
+                                            {
+                                                'nr-DL-SelectedPRS-ResourceIdIndex-r16': 1
+                                            }
                                         ]
                                     }
                                 ]
@@ -143,124 +323,212 @@ def generate_lpp_provide_assistance_data(method):
                 ]
             }
 
-            ResponseLPP_Message_body= ("c1", ( "provideAssistanceData", { "criticalExtensions": ( "c1", ("provideAssistanceData-r9", 
-                                            {    'nr-Multi-RTT-ProvideAssistanceData-r16': AssistanceDataRTT    }       ))}))
-            
+            ResponseLPP_Message_body = (
+                "c1",
+                (
+                    "provideAssistanceData",
+                    {
+                        "criticalExtensions": (
+                            "c1",
+                            (
+                                "provideAssistanceData-r9",
+                                {
+                                    'nr-Multi-RTT-ProvideAssistanceData-r16':
+                                        AssistanceDataRTT
+                                }
+                            )
+                        )
+                    }
+                )
+            )
+
+
         case "nr-DL-TDOA-RequestAssistanceData-r16":
-            
-            AssistanceDataDLTDOA={
+
+            prs_configs = read_prs_config()
+
+            assistance_data_per_freq = []
+
+            for trp_index, cfg in prs_configs.items():
+                resource_set = _build_prs_resource_set(
+                    cfg,
+                    resource_set_id=4,
+                    scs=1  # TODO: derive from cfg once conf format carries SCS explicitly
+                )
+
+                assistance_data_per_freq.append({
+                    'dl-PRS-ID-r16': trp_index,
+                    'nr-PhysCellID-r16': cfg['PhysCellID'],
+
+                    'nr-CellGlobalID-r16': {
+                        'mcc-r15': [
+                            int(config.mcc[0]),
+                            int(config.mcc[1]),
+                            int(config.mcc[2])
+                        ],
+                        'mnc-r15': [
+                            int(config.mnc[0]),
+                            int(config.mnc[1])
+                        ],
+                        'nr-cellidentity-r15': (5, 36)
+                    },
+
+                    'nr-ARFCN-r16': cfg['ARFCN'],
+
+                    'nr-DL-PRS-SFN0-Offset-r16': {
+                        'sfn-Offset-r16': 0,
+                        'integerSubframeOffset-r16': 0
+                    },
+
+                    'nr-DL-PRS-ExpectedRSTD-r16': 4,
+                    'nr-DL-PRS-ExpectedRSTD-Uncertainty-r16': 55,
+
+                    'nr-DL-PRS-Info-r16': {
+                        'nr-DL-PRS-ResourceSetList-r16': [resource_set]
+                    },
+
+                    'prs-OnlyTP-r16': 'true'
+                })
+
+            first_cfg = next(iter(prs_configs.values()))
+            EFFECTIVE_NUM_RB = 104 #to be set at 24 for ntn testing
+            AssistanceDataDLTDOA = {
                 'nr-DL-PRS-AssistanceData-r16': {
                     'nr-DL-PRS-ReferenceInfo-r16': {
-                        'dl-PRS-ID-r16': 11,
-                        'nr-DL-PRS-ResourceID-List-r16': [3, 4]
+                        'dl-PRS-ID-r16': 0,
+                        'nr-DL-PRS-ResourceID-List-r16': [0]
                     },
+
                     'nr-DL-PRS-AssistanceDataList-r16': [
                         {
                             'nr-DL-PRS-PositioningFrequencyLayer-r16': {
-                                'dl-PRS-SubcarrierSpacing-r16': 'kHz30',
-                                'dl-PRS-ResourceBandwidth-r16': 45,
+                                'dl-PRS-SubcarrierSpacing-r16': 'kHz30',  # TODO: same as scs above
+                                'dl-PRS-ResourceBandwidth-r16':
+                                    _prs_bandwidth(EFFECTIVE_NUM_RB),
                                 'dl-PRS-StartPRB-r16': 0,
-                                'dl-PRS-PointA-r16': 1,
-                                'dl-PRS-CombSizeN-r16': 'n2',
+                                'dl-PRS-PointA-r16': next(iter(prs_configs.values()))['ARFCN'],
+                                'dl-PRS-CombSizeN-r16':
+                                    _prs_comb_size(next(iter(prs_configs.values()))['CombSize']),
                                 'dl-PRS-CyclicPrefix-r16': 'normal'
                             },
-                            'nr-DL-PRS-AssistanceDataPerFreq-r16': [
-                                {
-                                    'dl-PRS-ID-r16': 44,
-                                    'nr-PhysCellID-r16': 33,
-                                    'nr-CellGlobalID-r16': {
-                                        'mcc-r15': [int(config.mcc[0]), int(config.mcc[1]), int(config.mcc[2])],
-                                        'mnc-r15': [int(config.mnc[0]), int(config.mnc[1])],
-                                        'nr-cellidentity-r15': (5,36) 
-                                    },
-                                    'nr-ARFCN-r16': 445,
-                                    'nr-DL-PRS-SFN0-Offset-r16': {
-                                        'sfn-Offset-r16': 44,
-                                        'integerSubframeOffset-r16': 5
-                                    },
-                                    'nr-DL-PRS-ExpectedRSTD-r16': 4,
-                                    'nr-DL-PRS-ExpectedRSTD-Uncertainty-r16': 55,
-                                    'nr-DL-PRS-Info-r16': {
-                                        'nr-DL-PRS-ResourceSetList-r16': [
-                                            {
-                                                'nr-DL-PRS-ResourceSetID-r16': 4,
-                                                'dl-PRS-Periodicity-and-ResourceSetSlotOffset-r16': ('scs30-r16', ('n8-r16', 2)),
-                                                'dl-PRS-ResourceRepetitionFactor-r16': 'n2',
-                                                'dl-PRS-NumSymbols-r16': 'n2',
-                                                'dl-PRS-MutingOption1-r16': {
-                                                    'dl-prs-MutingBitRepetitionFactor-r16': 'n2',
-                                                    'nr-option1-muting-r16': ('po8-r16', (1,8) )
-                                                },
-                                                'dl-PRS-MutingOption2-r16': {
-                                                    'nr-option2-muting-r16': ('po8-r16', (1,8) )
-                                                },
-                                                'dl-PRS-ResourcePower-r16': 33,
-                                                'dl-PRS-ResourceList-r16': [
-                                                    {
-                                                        'nr-DL-PRS-ResourceID-r16': 4,
-                                                        'dl-PRS-SequenceID-r16': 55,
-                                                        'dl-PRS-CombSizeN-AndReOffset-r16': ('n2-r16', 1),
-                                                        'dl-PRS-ResourceSlotOffset-r16': 2,
-                                                        'dl-PRS-ResourceSymbolOffset-r16': 3,
-                                                        'dl-PRS-QCL-Info-r16': (
-                                                            'dl-PRS-r16', {
-                                                                'qcl-DL-PRS-ResourceID-r16': 3,
-                                                                'qcl-DL-PRS-ResourceSetID-r16': 4
-                                                            }
-                                                        )
-                                                    }
-                                                ]
-                                            }
-                                        ]
-                                    },
-                                    'prs-OnlyTP-r16': 'true'
-                                }
-                            ]
+                            'nr-DL-PRS-AssistanceDataPerFreq-r16': assistance_data_per_freq
                         }
                     ],
                     'nr-SSB-Config-r16': [
                         {
-                            'nr-PhysCellID-r16': 33,
-                            'nr-ARFCN-r16': 445,
-                            'ss-PBCH-BlockPower-r16': 44,
+                            'nr-PhysCellID-r16': first_cfg['PhysCellID'],
+                            'nr-ARFCN-r16': first_cfg['ARFCN'],
+                            'ss-PBCH-BlockPower-r16': -25,
                             'halfFrameIndex-r16': 1,
-                            'ssb-periodicity-r16': 'ms5',
-                            'ssb-PositionsInBurst-r16': ('mediumBitmap-r16', (1,8)),
+                            'ssb-periodicity-r16': 'ms20',
+                            'ssb-PositionsInBurst-r16': (
+                                'mediumBitmap-r16',
+                                (1, 8)
+                            ),
                             'ssb-SubcarrierSpacing-r16': 'kHz30',
-                            'sfn-SSB-Offset-r16': 2
+                            'sfn-SSB-Offset-r16': 0
                         }
                     ]
                 },
+
                 'nr-SelectedDL-PRS-IndexList-r16': [
                     {
                         'nr-SelectedDL-PRS-FrequencyLayerIndex-r16': 1,
+
                         'nr-SelectedDL-PRS-IndexListPerFreq-r16': [
                             {
-                                'nr-SelectedTRP-Index-r16': 1,
+                                'nr-SelectedTRP-Index-r16': trp_index + 1,
+
                                 'dl-SelectedPRS-ResourceSetIndexList-r16': [
                                     {
                                         'nr-DL-SelectedPRS-ResourceSetIndex-r16': 1,
+
                                         'dl-SelectedPRS-ResourceIndexList-r16': [
-                                            {'nr-DL-SelectedPRS-ResourceIdIndex-r16': 1}
+                                            {
+                                                'nr-DL-SelectedPRS-ResourceIdIndex-r16': 1
+                                            }
                                         ]
                                     }
                                 ]
                             }
+                            for trp_index in prs_configs
                         ]
                     }
                 ]
             }
 
-            
-            ResponseLPP_Message_body= ("c1", ( "provideAssistanceData", { "criticalExtensions": ( "c1", ("provideAssistanceData-r9", 
-                                            {    'nr-DL-TDOA-ProvideAssistanceData-r16': AssistanceDataDLTDOA    }       ))}))            
+            ResponseLPP_Message_body = (
+                "c1",
+                (
+                    "provideAssistanceData",
+                    {
+                        "criticalExtensions": (
+                            "c1",
+                            (
+                                "provideAssistanceData-r9",
+                                {
+                                    'nr-DL-TDOA-ProvideAssistanceData-r16':
+                                        AssistanceDataDLTDOA
+                                }
+                            )
+                        )
+                    }
+                )
+            )
 
-        case _:
-                
-                log.logger_LocAlg.error("INTERNAL ERROR Methods non valid ")
-                ResponseLPP_Message_body= generate_lpp_error("incorrectDataValue")
 
     return ResponseLPP_Message_body
+
+# GENERATE LPP REQUEST ASSISTANCE DATA FROM THE METHOD USED
+# Counterpart to generate_lpp_provide_assistance_data(): this is the UE/SUPL-client
+# -> LMF direction (asking for assistance data), not the LMF -> UE response.
+# Per RequestAssistanceData-r9-IEs, every field is OPTIONAL, so a minimal,
+# spec-compliant request can omit almost everything and still be valid.
+def generate_lpp_request_assistance_data(method, phys_cell_id=None):
+
+    match method:
+
+        case 'nr-DL-TDOA-RequestAssistanceData-r16':
+
+            nr_dl_tdoa_request = {
+                # Bits: dl-prs (bit 0), posCalc (bit 1). (3, 2) = both requested.
+                'nr-AdType-r16': (3, 2)
+            }
+
+            if phys_cell_id is not None:
+                nr_dl_tdoa_request['nr-PhysCellID-r16'] = phys_cell_id
+
+            RequestIEs = {
+                'nr-DL-TDOA-RequestAssistanceData-r16': nr_dl_tdoa_request
+            }
+
+            RequestLPP_Message_body = (
+                "c1",
+                (
+                    "requestAssistanceData",
+                    {
+                        "criticalExtensions": (
+                            "c1",
+                            (
+                                "requestAssistanceData-r9",
+                                RequestIEs
+                            )
+                        )
+                    }
+                )
+            )
+
+        case _:
+
+            log.logger_LocAlg.error(
+                "INTERNAL ERROR Methods non valid "
+            )
+
+            RequestLPP_Message_body = generate_lpp_error(
+                "incorrectDataValue"
+            )
+
+    return RequestLPP_Message_body
 
 # GENERATE LPP REQUEST LOCATION INFORMATION BASED ON METHOD, MODE
 def generate_lpp_request_location_request(method,mode,configuration):
