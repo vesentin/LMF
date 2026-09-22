@@ -34,13 +34,17 @@ def handle_multipart_related(headerCont, msg):
                     body=part_divided[4]
                     log.logger_LMF_API.debug('Binary body (LPP): {body}')
                     #handle the LPP message 
-                    handleLPP(body) 
+                    response_bytes, lmf_instance = handleLPP(body)
+                    if response_bytes:
+                        lmf.send_message(response_bytes, proto="5gnas", imsi=lmf_instance.imsi, lcs_correlation=lmf_instance.lcs_corr_id)
                 else:
                     log.logger_LMF_API.warning('Content-Id in the multipart body not equal in the Json Body')
                     body=part_divided[4]
                     log.logger_LMF_API.debug(f'Binary body (LPP): {body}')
                     #handle the LPP message 
-                    handleLPP(body) 
+                    response_bytes, lmf_instance = handleLPP(body)
+                    if response_bytes:
+                        lmf.send_message(response_bytes, proto="5gnas", imsi=lmf_instance.imsi, lcs_correlation=lmf_instance.lcs_corr_id) 
 
             if b'Content-Type: application/vnd.3gpp.ngap' in part_divided:
                 log.logger_LMF_API.info('Handled a NGAP body (N2 message)')
@@ -270,6 +274,58 @@ def hande_http_cipher_key_data():
     return "",500
 
 
-if __name__ == '__main__':
-    app.run(host=config.LMF_IP, port=config.LMF_API_PORT, debug=False)
+import socket
+from supl_message import (
+    build_slp_session_id,
+    encode_supl_response,
+    encode_supl_pos,
+    recv_ulp_pdu,
+)
 
+SUPL_HOST = "0.0.0.0"
+SUPL_PORT = 65001  # or pull from config, e.g. config.SUPL_PORT
+
+def supl_server_loop():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind((SUPL_HOST, SUPL_PORT))
+        server_sock.listen(1)
+        log.logger_LMF_API.info(f"SUPL server listening on {SUPL_HOST}:{SUPL_PORT}")
+
+        while True:
+            conn, addr = server_sock.accept()
+            try:
+                with conn:
+                    log.logger_LMF_API.info(f"SUPL connection from {addr}")
+                    session_id_value = None
+
+                    while True:
+                        msg_type, msg_value, session_id_value = recv_ulp_pdu(conn)
+
+                        if msg_type == 'SUPLSTART':
+                            my_slp_session_id = build_slp_session_id(session_id_bytes=os.urandom(4))
+                            session_id_value = dict(session_id_value)
+                            session_id_value['slpSessionID'] = my_slp_session_id
+                            conn.sendall(encode_supl_response(session_id_value))
+
+                        elif msg_type == 'SUPLPOSINIT':
+                            request_lpp_bytes = msg_value['suplpos']['posPayLoad'][1]['lPPPayload'][0]
+                            ensure_session_for_lpp(request_lpp_bytes)
+                            response_bytes, lmf_instance = handleLPP(request_lpp_bytes)
+                            if response_bytes is not None:
+                                conn.sendall(encode_supl_pos(session_id_value, response_bytes))
+
+                        elif msg_type == 'SUPLEND':
+                            log.logger_LMF_API.info("SUPL session complete.")
+                            break
+
+                        else:
+                            log.logger_LMF_API.warning(f"Unexpected SUPL message '{msg_type}', ending session.")
+                            break
+            except Exception as e:
+                # A single bad/crashed client should never take down the
+                # whole SUPL listener -- log it and go back to accept().
+                log.logger_LMF_API.error(f"SUPL session error: {e}")
+if __name__ == '__main__':
+    threading.Thread(target=supl_server_loop, daemon=True).start()
+    app.run(host=config.LMF_IP, port=config.LMF_API_PORT, debug=False)

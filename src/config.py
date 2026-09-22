@@ -1,17 +1,17 @@
 # IP and PORT of the LMF within the docker network
-LMF_IP = "lmf_net.org"
-LMF_API_PORT = "4321"
+LMF_IP = '0.0.0.0'
+LMF_API_PORT = "4333"
+#LMF_IP = "lmf_net.org"
+#LMF_API_PORT = "4321"
 LMF_PORT = 9090
 
-
-
 ### CORE NETOWRK USED ##
-#CN_Used= "OAI"
-CN_Used = "free5gc"
+CN_Used= "OAI"
+#CN_Used = "free5gc"
 
 match CN_Used:
     case "OAI": # IP/PORT FOR OAI core network
-        AMF_IP = "192.168.170.132"
+        AMF_IP = "192.168.70.138"
         AMF_PORT = 8080
     case "free5gc":     # IP/PORT FOR free5gc
         AMF_IP = "10.100.200.50"
