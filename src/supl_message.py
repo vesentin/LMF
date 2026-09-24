@@ -19,7 +19,13 @@ def build_default_set_capabilities():
     """
     Builds a minimal, dummy SETCapabilities value (SUPL-START.SETCapabilities).
     Mandatory fields: posTechnology, prefMethod, posProtocol.
-    All boolean flags are placeholder values, not reflective of real UE capabilities.
+
+    PERMANENT LIMITATION, not a TODO: posTechnology's available flags
+    (agpsSETassisted, agpsSETBased, autonomousGPS, aflt, ecid, eotd, otdoa)
+    are all legacy 2G/3G/A-GNSS technologies -- this ULP schema version has
+    no NR/5G-specific capability flag at all, so no value here can
+    correctly represent this project's actual UE capabilities. otdoa=True
+    is used as the closest available legacy analogue, not a real claim.
     """
     return {
         'posTechnology': {
@@ -44,9 +50,12 @@ def build_default_location_id():
     """
     Builds a minimal, dummy LocationId value (ULP-Components.LocationId).
     Mandatory fields: cellInfo, status.
-    Uses a dummy GSM cell (legacy CellInfo CHOICE option), since no NR/5G
-    cell identification option exists in this ULP schema version at the
-    base or version-2-extension level (see project notes).
+  
+    PERMANENT LIMITATION, not a TODO: the base CellInfo CHOICE (and its
+    version-2 extension, checked directly in this schema) has no NR/5G
+    cell-identification option -- only legacy 2G/3G formats (gsmCell,
+    wcdmaCell, etc.) exist. A dummy gsmCell value is used since there is
+    no schema-valid way to represent a real NR cell here.
     """
     return {
         'cellInfo': ('gsmCell', {
@@ -118,10 +127,11 @@ def build_supl_response(pos_method='oTDOA'):
     Builds a minimal SUPLRESPONSE value (SUPL-RESPONSE.SUPLRESPONSE).
     Mandatory field: posMethod.
 
-    NOTE: this ULP schema version has no NR/5G-specific posMethod option,
-    even in its version-2 extensions (see project notes on this finding).
-    'oTDOA' is used as the closest available legacy placeholder; this does
-    not affect the LPP payload content carried separately in SUPLPOS.
+    PERMANENT LIMITATION, not a TODO: this ULP schema version's posMethod
+    ENUM has no NR/5G-specific value, in the base type or its version-2
+    extensions. 'oTDOA' is used as the closest legacy analogue. This is
+    session-level metadata only -- it does not affect the actual LPP
+    payload content carried separately in SUPLPOS.
     """
     return {
         'posMethod': pos_method,
@@ -163,22 +173,27 @@ def build_default_version():
     return {'maj': 2, 'min': 0, 'servind': 0}
 
 
-def build_set_session_id(session_id, client_name='client-1'):
+def build_set_session_id(session_id, client_name='None'):
     """
     Builds a SetSessionID value (ULP-Components.SetSessionID).
     Identifies the client side of a session.
 
     session_id: integer, 0-65535, picked by the client for this session.
-    client_name: placeholder string used as the 'nai' (Network Access
-    Identifier) SETId CHOICE option -- the simplest of the available
-    SETId options (msisdn/mdn/min/imsi/nai/iPAddress) to fill in without
-    needing a real phone number or IMSI.
+    client_name: string used as the 'nai' (Network Access Identifier)
+    SETId CHOICE option -- the simplest of the available SETId options
+    (msisdn/mdn/min/imsi/nai/iPAddress) to fill without a real subscriber
+    identity. If not given, defaults to a string derived from session_id
+    so distinct sessions are at least distinguishable in logs -- this is
+    still a placeholder identity, not a real one; no SETId option here
+    can currently be populated with genuine subscriber data.
     """
+    if client_name is None:
+        client_name = f"ue-session-{session_id}"
+
     return {
         'sessionId': session_id,
         'setId': ('nai', client_name),
     }
-
 
 def build_slp_session_id(session_id_bytes, ip_bytes=b'\x7f\x00\x00\x01'):
     """
@@ -188,13 +203,14 @@ def build_slp_session_id(session_id_bytes, ip_bytes=b'\x7f\x00\x00\x01'):
     session_id_bytes: exactly 4 raw bytes (fixed size per schema constraint),
     chosen by the server as a session identifier.
     ip_bytes: 4 raw bytes representing the server's IPv4 address; defaults
-    to 127.0.0.1 (loopback), matching the current localhost-only setup.
+    to 127.0.0.1 (loopback). In practice this should be overridden with
+    the LMF's real deployment address (see config.LMF_PUBLIC_IP), since
+    loopback is only correct when client and server run on the same host.
     """
     return {
         'sessionID': session_id_bytes,
         'slpId': ('iPAddress', ('ipv4Address', ip_bytes)),
     }
-
 
 def _encode_ulp_pdu(session_id_value, message_type_name, message_value):
     """
@@ -253,13 +269,28 @@ def decode_ulp_pdu(data):
 
     return message_type_name, message_value, decoded['sessionID']
 
-def recv_ulp_pdu(sock):
+def recv_ulp_pdu(sock, max_buffer_size=65536):
+    """
+    Accumulates bytes from sock until a complete ULP_PDU can be decoded.
+    UPER is not byte aligned, so we cannot know the message is complete from 
+    its length, we rety decoding every new chunk instead.
+
+    max_buffer_size guards against buffering forever on a stream that will never decode
+    (e.g. corrupted data).
+    """
     buffer = b''
     while True:
         chunk = sock.recv(4096)
         if not chunk:
             raise ConnectionError("Socket closed before a full message was received")
         buffer += chunk
+       
+        if len(buffer) > max_buffer_size:
+            raise ValueError(
+                f"ULP_PDU exceeded {max_buffer_size} bytes without decoding "
+                f"successfully --likely malformed or wrong protocol data"
+            )
+
         try:
             msg_type, msg_value, session_id_value = decode_ulp_pdu(buffer)
             return msg_type, msg_value, session_id_value
@@ -312,10 +343,10 @@ def send_prs_payload_to_ue(sock, ue_payload_bytes):
 # ---------------------------------------------------------------------
 
 if __name__ == '__main__':
-    from LPP_message_gen import generate_lpp_provide_assistance_data, generate_LPP_MESSAGE
+    from LPP_message_gen import generate_lpp_request_assistance_data, generate_LPP_MESSAGE
     from LPP_handler import encodeLPP
 
-    body = generate_lpp_provide_assistance_data('nr-DL-TDOA-RequestAssistanceData-r16')
+    body = generate_lpp_request_assistance_data('nr-DL-TDOA-RequestAssistanceData-r16')
     full_msg = generate_LPP_MESSAGE(1, True, 0, lpp_message_body=body)
     lpp_bytes = encodeLPP(full_msg)
     print(f"LPP bytes: {len(lpp_bytes)}")
