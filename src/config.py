@@ -1,6 +1,11 @@
 # IP and PORT of the LMF within the docker network
 LMF_IP = '0.0.0.0'
 LMF_API_PORT = "4333"
+#The LMF's real, reachable IP address, used to identify the server
+#in SlpSessionID (ULP-Components.SlpSessionID).
+#Needs to match the IP in 'docker-compose-lmf.yaml'
+LMF_PUBLIC_IP = "192.168.70.140"
+
 #LMF_IP = "lmf_net.org"
 #LMF_API_PORT = "4321"
 LMF_PORT = 9090

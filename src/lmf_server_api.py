@@ -10,6 +10,15 @@ from LPP_message_gen import *
 from LPP_handler import *
 from NRPPa_handler import *
 
+import socket
+from supl_message import (
+    build_slp_session_id,
+    encode_supl_response,
+    encode_supl_pos,
+    recv_ulp_pdu,
+)
+
+
 active_requests = dict()
 
 app = Flask(__name__)
@@ -274,14 +283,6 @@ def hande_http_cipher_key_data():
     return "",500
 
 
-import socket
-from supl_message import (
-    build_slp_session_id,
-    encode_supl_response,
-    encode_supl_pos,
-    recv_ulp_pdu,
-)
-
 SUPL_HOST = "0.0.0.0"
 SUPL_PORT = 65001  # or pull from config, e.g. config.SUPL_PORT
 
@@ -303,7 +304,7 @@ def supl_server_loop():
                         msg_type, msg_value, session_id_value = recv_ulp_pdu(conn)
 
                         if msg_type == 'SUPLSTART':
-                            my_slp_session_id = build_slp_session_id(session_id_bytes=os.urandom(4))
+                            my_slp_session_id = build_slp_session_id(session_id_bytes=os.urandom(4), ip_bytes = socket.inet_aton(config.LMF_PUBLIC_IP))
                             session_id_value = dict(session_id_value)
                             session_id_value['slpSessionID'] = my_slp_session_id
                             conn.sendall(encode_supl_response(session_id_value))

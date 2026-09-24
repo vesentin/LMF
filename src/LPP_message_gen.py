@@ -75,6 +75,13 @@ def _prs_repetition(repetition):
         32: 'n32'
     }.get(repetition)
 
+def _prs_scs_name(scs):
+    return {
+        0: 'kHz15',
+        1: 'kHz30',
+        2: 'kHz60',
+        3: 'kHz120'
+    }[scs]
 
 def _prs_time_gap(time_gap):
     return {
@@ -86,7 +93,7 @@ def _prs_time_gap(time_gap):
         32: 'n32'
     }[time_gap]
 
-
+#unused --------------------------------
 def _prs_muting_repetition(repetition):
     return {
         1: 'n1',
@@ -94,7 +101,32 @@ def _prs_muting_repetition(repetition):
         4: 'n4',
         8: 'n8'
     }[repetition]
+#---------------------------------------
 
+def _effective_prs_bandwidth_rb(configured_num_rb):
+    """
+    dl-PRS-ResourceBandwidth-r16 can only represent PRB counts of the form
+    24, 28, 32, ..., 272 (steps of 4 from 24). If the configured NumRB
+    doesn't fall on this grid (e.g. 106, a valid PHY carrier size with no
+    valid LPP encoding), round DOWN to the nearest valid value -- staying
+    within the configured/real carrier rather than exceeding it.
+    """
+    if configured_num_rb < 24:
+        raise ValueError(
+            f"Configured NumRB {configured_num_rb} is below the minimum "
+            "LPP-representable PRS bandwidth (24 PRBs)"
+        )
+
+    effective = configured_num_rb - ((configured_num_rb - 24) % 4)
+
+    if effective != configured_num_rb:
+        log.logger_LPP.warning(
+            f"Configured NumRB {configured_num_rb} has no valid "
+            f"dl-PRS-ResourceBandwidth-r16 encoding; using {effective} PRBs "
+            f"instead (nearest valid value not exceeding the configured carrier)"
+        )
+
+    return effective
 
 def _prs_comb_and_re_offset(comb_size, re_offset):
     """
@@ -120,13 +152,17 @@ def _build_prs_resource(cfg, resource_id):
         'dl-PRS-ResourceSymbolOffset-r16':
             cfg['SymbolStart'][resource_id],
 
-        # We do not have QCL information in prs.conf.
-        # Keep the existing value for now.
+        #QLC info: mirrors OAI's own gNB-side create_qlc() (lpp_prs.c), which
+        #QLCs each PRS resource with the cell's first active SSB. Both current tests (band-78, NTN)
+        #use bitmap = 1, so ssb_index = 0 is correct for these deployments; would need to change
+        #if a config ever activates a different SSB pattern.
+
         'dl-PRS-QCL-Info-r16': (
-            'dl-PRS-r16',
+            'ssb-r16',
             {
-                'qcl-DL-PRS-ResourceID-r16': 3,
-                'qcl-DL-PRS-ResourceSetID-r16': 4
+                'pci-r16': cfg['PhysCellID'],
+                'ssb-Index-r16': 0,
+                'rs-Type-r16': 'typeD'
             }
         )
     }
@@ -172,6 +208,7 @@ def _prs_periodicity(period, offset, scs=0):
 def _build_prs_resource_set(cfg, resource_set_id=4, scs=0):
     """
     Build one LPP NR-DL-PRS ResourceSet from one OAI PRS configuration.
+    scs is not read from a config file yet, so must be changed manually
     """
 
     period = cfg['PRSResourceSetPeriod'][0]
@@ -206,7 +243,7 @@ def _build_prs_resource_set(cfg, resource_set_id=4, scs=0):
 
     return resource_set
 
-def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
+def generate_lpp_provide_assistance_data(method):
 
     match method:
 
@@ -218,7 +255,7 @@ def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
             resource_set = _build_prs_resource_set(
                 cfg,
                 resource_set_id=4,
-                scs=0
+                scs=cfg['SCS']
             )
 
             AssistanceDataRTT = {
@@ -292,7 +329,7 @@ def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
                                 'mediumBitmap-r16',
                                 (1, 8)
                             ),
-                            'ssb-SubcarrierSpacing-r16': 'kHz30',
+                            'ssb-SubcarrierSpacing-r16': _prs_scs_name(first_cfg['SCS']),
                             'sfn-SSB-Offset-r16': 2
                         }
                     ]
@@ -353,7 +390,7 @@ def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
                 resource_set = _build_prs_resource_set(
                     cfg,
                     resource_set_id=4,
-                    scs=1  # TODO: derive from cfg once conf format carries SCS explicitly
+                    scs=cfg['SCS'] 
                 )
 
                 assistance_data_per_freq.append({
@@ -391,7 +428,7 @@ def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
                 })
 
             first_cfg = next(iter(prs_configs.values()))
-            EFFECTIVE_NUM_RB = 104 #to be set at 24 for ntn testing
+            EFFECTIVE_NUM_RB = _effective_prs_bandwidth_rb(first_cfg['NumRB'])
             AssistanceDataDLTDOA = {
                 'nr-DL-PRS-AssistanceData-r16': {
                     'nr-DL-PRS-ReferenceInfo-r16': {
@@ -402,13 +439,13 @@ def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
                     'nr-DL-PRS-AssistanceDataList-r16': [
                         {
                             'nr-DL-PRS-PositioningFrequencyLayer-r16': {
-                                'dl-PRS-SubcarrierSpacing-r16': 'kHz30',  # TODO: same as scs above
+                                'dl-PRS-SubcarrierSpacing-r16': 'kHz15',  # TODO: same as scs above
                                 'dl-PRS-ResourceBandwidth-r16':
                                     _prs_bandwidth(EFFECTIVE_NUM_RB),
                                 'dl-PRS-StartPRB-r16': 0,
-                                'dl-PRS-PointA-r16': next(iter(prs_configs.values()))['ARFCN'],
+                                'dl-PRS-PointA-r16': first_cfg['ARFCN'],
                                 'dl-PRS-CombSizeN-r16':
-                                    _prs_comb_size(next(iter(prs_configs.values()))['CombSize']),
+                                    _prs_comb_size(first_cfg['CombSize']),
                                 'dl-PRS-CyclicPrefix-r16': 'normal'
                             },
                             'nr-DL-PRS-AssistanceDataPerFreq-r16': assistance_data_per_freq
@@ -425,7 +462,10 @@ def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
                                 'mediumBitmap-r16',
                                 (1, 8)
                             ),
-                            'ssb-SubcarrierSpacing-r16': 'kHz30',
+                            # NOTE: dl-PRS-SubcarrierSpacing-r16 is a frequency-layer-level field (set 
+                            # once, not per-TRP), so this assumes all TRPs in prs.conf share the same
+                            # SCS -- true for all scenarios tested so far, but not enforced.
+                            'ssb-SubcarrierSpacing-r16': _prs_scs_name(first_cfg['SCS']),
                             'sfn-SSB-Offset-r16': 0
                         }
                     ]
@@ -476,6 +516,9 @@ def generate_lpp_provide_assistance_data(method, trp_cell_info=None):
                 )
             )
 
+        case _:
+            log.logger_LPP.error(f"Unsupported method in generate_lpp_provide_assistance_data: {method}")
+            ResponseLPP_Message_body = generate_lpp_error("incorrectDataValue")
 
     return ResponseLPP_Message_body
 
