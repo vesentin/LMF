@@ -16,8 +16,9 @@ services:
       - "65001:65001" #exposing supl server port to make it reachable from the outside
     volumes:
       - ./envoy_proxy/envoy.yaml:/etc/envoy/envoy.yaml
-      - ${OAI_CONF_DIR}/ue.nr.prs.fr1.106prb.conf:/LMF/prs.conf:ro
-
+    #  - ${OAI_CONF_DIR}/ue.nr.prs.fr1.106prb.conf:/LMF/prs.conf:ro
+      - ${OAI_CONF_DIR}/ue.band255.3gnb.multiru.ntn-leo-RegenWithPRS.conf:/LMF/prs.conf:ro
+      - ${GNB_CONF_DIR}:/LMF/gnb_confs:ro
     restart: on-failure
     networks:
       privnet:
@@ -29,4 +30,4 @@ networks:
   privnet:
     external: true
    # name: free5gc-compose_privnet
-    name: demo-oai-public-net
+    name: oai-cn5g-public-net
