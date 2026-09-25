@@ -1,5 +1,6 @@
 import custom_log as log
 import config
+import re
 from prs_config import read_prs_config
 
 # FUNCTIONS FOR GENERATING THE LPP MESSAGES USED BY THE LMF
@@ -103,6 +104,31 @@ def _prs_muting_repetition(repetition):
     }[repetition]
 #---------------------------------------
 
+def read_gnb_cell_info(path):
+    """
+    Extract PhysCellID, ARFCN (dl_absoluteFrequencyPointA), and SCS
+    (dl_subcarrierSpacing) directly from a real OAI gNB .conf file --
+    avoids duplicating these into the separate UE-facing prs.conf.
+    Simple regex line-scan, not a full libconfig parser: these three
+    keys appear as flat "key = value;" lines and are unique within the
+    file, so a targeted scan is sufficient without needing to understand
+    the file's full nested structure.
+    """
+    with open(path) as f:
+        text = f.read()
+
+    def find_int(key):
+        m = re.search(rf"\b{key}\s*=\s*(-?\d+)", text)
+        if not m:
+            raise ValueError(f"{key} not found in {path}")
+        return int(m.group(1))
+
+    return {
+        'PhysCellID': find_int('physCellId'),
+        'ARFCN': find_int('dl_absoluteFrequencyPointA'),
+        'SCS': find_int('dl_subcarrierSpacing'),
+    }
+
 def _effective_prs_bandwidth_rb(configured_num_rb):
     """
     dl-PRS-ResourceBandwidth-r16 can only represent PRB counts of the form
@@ -138,7 +164,7 @@ def _prs_comb_and_re_offset(comb_size, re_offset):
     )
 
 
-def _build_prs_resource(cfg, resource_id):
+def _build_prs_resource(cfg, resource_id, phys_cell_id):
     return {
         'nr-DL-PRS-ResourceID-r16': resource_id,
         'dl-PRS-SequenceID-r16': cfg['NPRS_ID'][resource_id],
@@ -160,7 +186,7 @@ def _build_prs_resource(cfg, resource_id):
         'dl-PRS-QCL-Info-r16': (
             'ssb-r16',
             {
-                'pci-r16': cfg['PhysCellID'],
+                'pci-r16': phys_cell_id,
                 'ssb-Index-r16': 0,
                 'rs-Type-r16': 'typeD'
             }
@@ -205,7 +231,7 @@ def _prs_periodicity(period, offset, scs=0):
 
     return (scs_names[scs], (f'n{period}-r16', offset))
 
-def _build_prs_resource_set(cfg, resource_set_id=4, scs=0):
+def _build_prs_resource_set(cfg, resource_set_id=4, scs=0, phys_cell_id=None):
     """
     Build one LPP NR-DL-PRS ResourceSet from one OAI PRS configuration.
     scs is not read from a config file yet, so must be changed manually
@@ -226,7 +252,7 @@ def _build_prs_resource_set(cfg, resource_set_id=4, scs=0):
         'dl-PRS-ResourcePower-r16': 33,
 
         'dl-PRS-ResourceList-r16': [
-            _build_prs_resource(cfg, i)
+            _build_prs_resource(cfg, i, phys_cell_id)
             for i in range(cfg['NumPRSResources'])
         ]
     }
@@ -255,7 +281,7 @@ def generate_lpp_provide_assistance_data(method):
             resource_set = _build_prs_resource_set(
                 cfg,
                 resource_set_id=4,
-                scs=cfg['SCS']
+                scs=cell_info['SCS']
             )
 
             AssistanceDataRTT = {
@@ -329,7 +355,7 @@ def generate_lpp_provide_assistance_data(method):
                                 'mediumBitmap-r16',
                                 (1, 8)
                             ),
-                            'ssb-SubcarrierSpacing-r16': _prs_scs_name(first_cfg['SCS']),
+                            'ssb-SubcarrierSpacing-r16': _prs_scs_name(cell_info['SCS']),
                             'sfn-SSB-Offset-r16': 2
                         }
                     ]
@@ -387,15 +413,17 @@ def generate_lpp_provide_assistance_data(method):
             assistance_data_per_freq = []
 
             for trp_index, cfg in prs_configs.items():
+                cell_info = read_gnb_cell_info(config.GNB_CONF_PATHS[trp_index])
                 resource_set = _build_prs_resource_set(
                     cfg,
                     resource_set_id=4,
-                    scs=cfg['SCS'] 
+                    scs=cell_info['SCS'],
+                    phys_cell_id=cell_info['PhysCellID'] 
                 )
 
                 assistance_data_per_freq.append({
                     'dl-PRS-ID-r16': trp_index,
-                    'nr-PhysCellID-r16': cfg['PhysCellID'],
+                    'nr-PhysCellID-r16': cell_info['PhysCellID'],
 
                     'nr-CellGlobalID-r16': {
                         'mcc-r15': [
@@ -410,7 +438,7 @@ def generate_lpp_provide_assistance_data(method):
                         'nr-cellidentity-r15': (5, 36)
                     },
 
-                    'nr-ARFCN-r16': cfg['ARFCN'],
+                    'nr-ARFCN-r16': cell_info['ARFCN'],
 
                     'nr-DL-PRS-SFN0-Offset-r16': {
                         'sfn-Offset-r16': 0,
@@ -443,7 +471,7 @@ def generate_lpp_provide_assistance_data(method):
                                 'dl-PRS-ResourceBandwidth-r16':
                                     _prs_bandwidth(EFFECTIVE_NUM_RB),
                                 'dl-PRS-StartPRB-r16': 0,
-                                'dl-PRS-PointA-r16': first_cfg['ARFCN'],
+                                'dl-PRS-PointA-r16': cell_info['ARFCN'],
                                 'dl-PRS-CombSizeN-r16':
                                     _prs_comb_size(first_cfg['CombSize']),
                                 'dl-PRS-CyclicPrefix-r16': 'normal'
@@ -453,8 +481,8 @@ def generate_lpp_provide_assistance_data(method):
                     ],
                     'nr-SSB-Config-r16': [
                         {
-                            'nr-PhysCellID-r16': first_cfg['PhysCellID'],
-                            'nr-ARFCN-r16': first_cfg['ARFCN'],
+                            'nr-PhysCellID-r16': cell_info['PhysCellID'],
+                            'nr-ARFCN-r16': cell_info['ARFCN'],
                             'ss-PBCH-BlockPower-r16': -25,
                             'halfFrameIndex-r16': 1,
                             'ssb-periodicity-r16': 'ms20',
@@ -465,7 +493,7 @@ def generate_lpp_provide_assistance_data(method):
                             # NOTE: dl-PRS-SubcarrierSpacing-r16 is a frequency-layer-level field (set 
                             # once, not per-TRP), so this assumes all TRPs in prs.conf share the same
                             # SCS -- true for all scenarios tested so far, but not enforced.
-                            'ssb-SubcarrierSpacing-r16': _prs_scs_name(first_cfg['SCS']),
+                            'ssb-SubcarrierSpacing-r16': _prs_scs_name(cell_info['SCS']),
                             'sfn-SSB-Offset-r16': 0
                         }
                     ]
