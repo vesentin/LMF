@@ -28,7 +28,7 @@ RUN pip install --ignore-installed -r LMF/src/requirements.txt
 RUN pip install --force-reinstall websocket-client
 
 
-COPY ../envoy_proxy/envoy.yaml /etc/envoy/envoy.yaml
+COPY /envoy_proxy/envoy.yaml /etc/envoy/envoy.yaml
 
 
 COPY LICENSE LMF/
