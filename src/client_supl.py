@@ -1,9 +1,13 @@
+import os
+import sys
 import socket
 import random
 
 from LPP_message_gen import generate_lpp_provide_assistance_data, generate_LPP_MESSAGE, generate_lpp_request_assistance_data
 from LPP_handler import encodeLPP
+from prs_config import read_gnb_serving_cell
 from supl_message import (
+    build_nr_cell_information,
     build_set_session_id,
     encode_supl_start,
     encode_supl_pos_init,
@@ -22,6 +26,17 @@ UE_PORT = 65000
 
 transaction_id = random.randint(1, 200)
 
+# Serving cell reported to the SLP in SUPL START / SUPL POS INIT: the cell of the
+# gNB this UE is camped on, read from that gNB's conf file (argument or the
+# SERVING_GNB_CONF environment variable). Without one, a placeholder is sent.
+serving_gnb_conf = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('SERVING_GNB_CONF')
+if serving_gnb_conf:
+    nr_cell = build_nr_cell_information(**read_gnb_serving_cell(os.path.expanduser(serving_gnb_conf)))
+    print(f"Serving cell read from {serving_gnb_conf}")
+else:
+    nr_cell = None
+    print("No serving gNB conf given: sending a placeholder cell")
+
 session_id_value = {'setSessionID': build_set_session_id(session_id=transaction_id, client_name='oai-ue-sim')}
 
 body = generate_lpp_request_assistance_data('nr-DL-TDOA-RequestAssistanceData-r16')
@@ -35,7 +50,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_sock:
     while state != 'DONE':
 
         if state == 'START':
-            request_pdu = encode_supl_start(session_id_value)
+            request_pdu = encode_supl_start(session_id_value, nr_cell)
             client_sock.sendall(request_pdu)
             print(f"Sent SUPLSTART ({len(request_pdu)} bytes)")
 
@@ -49,7 +64,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_sock:
                 state = 'DONE'
 
         elif state == 'POS_INIT':
-            request_pdu = encode_supl_pos_init(session_id_value, lpp_bytes)
+            request_pdu = encode_supl_pos_init(session_id_value, lpp_bytes, nr_cell)
             client_sock.sendall(request_pdu)
             print(f"Sent SUPLPOSINIT ({len(request_pdu)} bytes)")
 

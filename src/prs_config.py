@@ -99,7 +99,7 @@ def read_gnb_serving_cell(path):
 
     m = re.search(r'\bplmn_list\s*=', text)
     if not m:
-        raise ValueError(f"plmn_list not found in {path}")
+        raise ValueError(f"plmn_list not found in {path} -- this is not a gNB configuration (UE configs carry no cell identity); pass the conf of the gNB the UE is camped on")
     chunk = text[m.end():m.end() + 600]
     mcc = re.search(r'\bmcc\s*=\s*(\d+)', chunk)
     mnc = re.search(r'\bmnc\s*=\s*(\d+)', chunk)
