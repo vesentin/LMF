@@ -126,7 +126,7 @@ def build_supl_pos_with_lpp(lpp_message_bytes):
 # Top-level SUPL message builders
 # ---------------------------------------------------------------------
 
-def build_supl_start():
+def build_supl_start(nr_cell=None):
     """
     Builds a minimal SUPLSTART value (SUPL-START.SUPLSTART).
     Mandatory fields: sETCapabilities, locationId.
@@ -134,11 +134,11 @@ def build_supl_start():
     """
     return {
         'sETCapabilities': build_default_set_capabilities(),
-        'locationId': build_default_location_id(),
+        'locationId': build_default_location_id(nr_cell),
     }
 
 
-def build_supl_pos_init(lpp_message_bytes):
+def build_supl_pos_init(lpp_message_bytes, nr_cell=None):
     """
     Builds a minimal SUPLPOSINIT value (SUPL-POS-INIT.SUPLPOSINIT), which
     both initiates a SUPL session and carries a first LPP message, embedded
@@ -151,7 +151,7 @@ def build_supl_pos_init(lpp_message_bytes):
     """
     return {
         'sETCapabilities': build_default_set_capabilities(),
-        'locationId': build_default_location_id(),
+        'locationId': build_default_location_id(nr_cell),
         'suplpos': build_supl_pos_with_lpp(lpp_message_bytes),
     }
 
@@ -206,7 +206,7 @@ def build_default_version():
     return {'maj': 2, 'min': 0, 'servind': 0}
 
 
-def build_set_session_id(session_id, client_name='None'):
+def build_set_session_id(session_id, client_name=None):
     """
     Builds a SetSessionID value (ULP-Components.SetSessionID).
     Identifies the client side of a session.
@@ -336,8 +336,8 @@ def recv_ulp_pdu(sock, max_buffer_size=65536):
 # ULP_PDU envelope in one call.
 # ---------------------------------------------------------------------
 
-def encode_supl_pos_init(session_id_value, lpp_message_bytes):
-    message_value = build_supl_pos_init(lpp_message_bytes)
+def encode_supl_pos_init(session_id_value, lpp_message_bytes, nr_cell=None):
+    message_value = build_supl_pos_init(lpp_message_bytes, nr_cell)
     return _encode_ulp_pdu(session_id_value, 'SUPLPOSINIT', message_value)
 
 
@@ -346,8 +346,8 @@ def encode_supl_pos(session_id_value, lpp_message_bytes):
     return _encode_ulp_pdu(session_id_value, 'SUPLPOS', message_value)
 
 
-def encode_supl_start(session_id_value):
-    message_value = build_supl_start()
+def encode_supl_start(session_id_value, nr_cell=None):
+    message_value = build_supl_start(nr_cell)
     return _encode_ulp_pdu(session_id_value, 'SUPLSTART', message_value)
 
 
