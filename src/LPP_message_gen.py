@@ -412,6 +412,12 @@ def generate_lpp_provide_assistance_data(method):
 
             assistance_data_per_freq = []
 
+            if len(prs_configs) != len(config.GNB_CONF_PATHS):
+                msg = (f"prs.conf defines {len(prs_configs)} TRP(s) but config.GNB_CONF_PATHS "
+                       f"lists {len(config.GNB_CONF_PATHS)} gNB conf file(s); they must match")
+                log.logger_LPP.error(msg)
+                raise ValueError(msg)
+
             for trp_index, cfg in prs_configs.items():
                 cell_info = read_gnb_cell_info(config.GNB_CONF_PATHS[trp_index])
                 resource_set = _build_prs_resource_set(
