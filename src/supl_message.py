@@ -8,8 +8,16 @@ corresponding Pycrate type object, then .to_uper() to get real bytes.
 Reference: pycrate_asn1dir/ULP.py (OMA ULP / SUPL ASN.1 definitions)
 """
 
-from pycrate_asn1dir import ULP
-
+# ULP 2.0.6, compiled from the OMA specification (the schema bundled with
+# Pycrate is 2.0.2, 2014, which has no NR support). The generated file is not
+# stored in the repository: run tools/ulp206/make_ulp206.sh to create it.
+try:
+    import ULP206 as ULP
+except ImportError as e:
+    raise ImportError(
+        "src/ULP206.py is missing. Generate it with tools/ulp206/make_ulp206.sh "
+        "(see tools/ulp206/README.md)."
+    ) from e
 
 # ---------------------------------------------------------------------
 # Shared building blocks (reused across multiple message types)
@@ -17,15 +25,17 @@ from pycrate_asn1dir import ULP
 
 def build_default_set_capabilities():
     """
-    Builds a minimal, dummy SETCapabilities value (SUPL-START.SETCapabilities).
+    Builds a SETCapabilities value (SUPL-START.SETCapabilities).
     Mandatory fields: posTechnology, prefMethod, posProtocol.
 
-    PERMANENT LIMITATION, not a TODO: posTechnology's available flags
-    (agpsSETassisted, agpsSETBased, autonomousGPS, aflt, ecid, eotd, otdoa)
-    are all legacy 2G/3G/A-GNSS technologies -- this ULP schema version has
-    no NR/5G-specific capability flag at all, so no value here can
-    correctly represent this project's actual UE capabilities. otdoa=True
-    is used as the closest available legacy analogue, not a real claim.
+    ULP 2.0.6 can declare NR positioning support through
+    ver2-PosTechnology-extension.additionalPositioningMethods and LPP support
+    through ver2-PosProtocol-extension.lpp, so no legacy stand-in is needed:
+    all legacy technologies are False.
+
+    addPosMode is BIT STRING {standalone(0), setBased(1), setAssisted(2)}.
+    (0b001, 3) = setAssisted only: the UE measures and reports, the network
+    computes the position (it does not compute one itself yet).
     """
     return {
         'posTechnology': {
@@ -35,38 +45,62 @@ def build_default_set_capabilities():
             'aflt': False,
             'ecid': False,
             'eotd': False,
-            'otdoa': True,
+            'otdoa': False,
+            'ver2-PosTechnology-extension': {
+                'additionalPositioningMethods': [
+                    {'addPosID': 'nr-DL-TDOA', 'addPosMode': (0b001, 3)},
+                ],
+            },
         },
         'prefMethod': 'noPreference',
         'posProtocol': {
             'tia801': False,
             'rrlp': False,
-            'rrc': True,
+            'rrc': False,
+            'ver2-PosProtocol-extension': {'lpp': True},
         },
     }
 
-
-def build_default_location_id():
+def build_nr_cell_information(phys_cell_id, arfcn_nr, mcc, mnc, nr_cell_identity,
+                              tracking_area_code, arfcn_type='ssb'):
     """
-    Builds a minimal, dummy LocationId value (ULP-Components.LocationId).
-    Mandatory fields: cellInfo, status.
-  
-    PERMANENT LIMITATION, not a TODO: the base CellInfo CHOICE (and its
-    version-2 extension, checked directly in this schema) has no NR/5G
-    cell-identification option -- only legacy 2G/3G formats (gsmCell,
-    wcdmaCell, etc.) exist. A dummy gsmCell value is used since there is
-    no schema-valid way to represent a real NR cell here.
+    Builds an NRCellInformation value (Ver2-ULP-Components), one serving cell.
+
+    mcc, mnc: digit strings, e.g. '208' and '95' (keep leading zeros in mnc).
+    nr_cell_identity: 36-bit integer.  tracking_area_code: 24-bit integer.
+    arfcn_nr: with arfcn_type='ssb' this is the ARFCN of the SSB
+    (gNB conf: absoluteFrequencySSB), NOT the LPP dl-PRS-PointA value.
     """
     return {
-        'cellInfo': ('gsmCell', {
-            'refMCC': 1,
-            'refMNC': 1,
-            'refLAC': 1,
-            'refCI': 1,
-        }),
-        'status': 'current',
+        'servingCellInformation': [{
+            'physCellId': phys_cell_id,
+            'arfcn-NR': arfcn_nr,
+            'cellGlobalId': {
+                'plmn-Identity': {'mcc': [int(d) for d in mcc],
+                                  'mnc': [int(d) for d in mnc]},
+                'cellIdentityNR': (nr_cell_identity, 36),
+            },
+            'trackingAreaCode': (tracking_area_code, 24),
+            'arfcn-type': arfcn_type,
+        }]
     }
 
+
+def build_default_location_id(nr_cell=None):
+    """
+    Builds a LocationId value (ULP-Components.LocationId): mandatory fields
+    cellInfo and status. The cell is an NR cell (nrCell, ULP 2.0.6).
+
+    nr_cell: an NRCellInformation value from build_nr_cell_information().
+    If omitted, an obviously fake placeholder is used (all zeros, test PLMN
+    001-01) -- callers that know the real serving cell should pass it in.
+    """
+    if nr_cell is None:
+        nr_cell = build_nr_cell_information(0, 0, '001', '01', 0, 0)
+    return {
+        'cellInfo': ('ver2-CellInfo-extension', ('nrCell', nr_cell)),
+        'status': 'current',
+    }
 
 def build_supl_pos_with_lpp(lpp_message_bytes):
     """
@@ -122,21 +156,20 @@ def build_supl_pos_init(lpp_message_bytes):
     }
 
 
-def build_supl_response(pos_method='oTDOA'):
+def build_supl_response(pos_method='ver2-NR-DL-TDOA'):
     """
     Builds a minimal SUPLRESPONSE value (SUPL-RESPONSE.SUPLRESPONSE).
     Mandatory field: posMethod.
 
-    PERMANENT LIMITATION, not a TODO: this ULP schema version's posMethod
-    ENUM has no NR/5G-specific value, in the base type or its version-2
-    extensions. 'oTDOA' is used as the closest legacy analogue. This is
-    session-level metadata only -- it does not affect the actual LPP
-    payload content carried separately in SUPLPOS.
+    ULP 2.0.6 defines NR positioning methods in PosMethod
+    ('ver2-NR-DL-TDOA', 'ver2-NR-DL-AoD', 'ver2-NR-Multi-RTT', ...).
+    Note that in 2.0.6 the legacy identifiers are lower-case ('otdoa', not
+    'oTDOA'). This is session-level metadata only -- it does not affect the
+    LPP payload carried separately in SUPLPOS.
     """
     return {
         'posMethod': pos_method,
     }
-
 
 def build_supl_end():
     """
@@ -318,7 +351,7 @@ def encode_supl_start(session_id_value):
     return _encode_ulp_pdu(session_id_value, 'SUPLSTART', message_value)
 
 
-def encode_supl_response(session_id_value, pos_method='oTDOA'):
+def encode_supl_response(session_id_value, pos_method='ver2-NR-DL-TDOA'):
     message_value = build_supl_response(pos_method)
     return _encode_ulp_pdu(session_id_value, 'SUPLRESPONSE', message_value)
 
