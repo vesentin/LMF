@@ -50,13 +50,15 @@ gNBPos= [{'x': 0,'y': 0},
          {'x': 300,'y':0},
          {'x': 300,'y':300}]
 
-
+import os
 # List of gNB .conf file paths, one per TRP, index-matched to prs.conf's
 # TRP indices (GNB_CONF_PATHS[0] corresponds to prs_config0, etc.).
 # Used to read real PhysCellID/ARFCN/SCS directly from each gNB's own
 # config, instead of duplicating these fields into prs.conf by hand.
+GNB_CONF_DIR = os.environ.get('GNB_CONF_DIR', '/LMF/gnb_confs')
+
 GNB_CONF_PATHS = [
-    "/LMF/gnb_confs/gnb0.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf",
-    "/LMF/gnb_confs/gnb1.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf",
-    "/LMF/gnb_confs/gnb2.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf",
+    os.path.join(GNB_CONF_DIR, "gnb0.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf"),
+    os.path.join(GNB_CONF_DIR, "gnb1.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf"),
+    os.path.join(GNB_CONF_DIR, "gnb2.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf"),
 ]
