@@ -106,28 +106,112 @@ def _prs_muting_repetition(repetition):
 
 def read_gnb_cell_info(path):
     """
-    Extract PhysCellID, ARFCN (dl_absoluteFrequencyPointA), and SCS
-    (dl_subcarrierSpacing) directly from a real OAI gNB .conf file --
-    avoids duplicating these into the separate UE-facing prs.conf.
-    Simple regex line-scan, not a full libconfig parser: these three
-    keys appear as flat "key = value;" lines and are unique within the
-    file, so a targeted scan is sufficient without needing to understand
-    the file's full nested structure.
+    Extract PhysCellID, ARFCN (dl_absoluteFrequencyPointA), SCS
+    (dl_subcarrierSpacing), and cell identity (PLMN, NR cell identity,
+    tracking area code) directly from a real OAI gNB .conf file -- avoids
+    duplicating these into the separate UE-facing prs.conf.
+
+    Comments (#, //, /* */) are stripped before scanning, so a commented-out
+    line cannot be mistaken for the real value.
+
+    nr_cell_identity defaults to 0 with a warning if nr_cellid is absent
+    (some confs, e.g. band 78, don't set it).
     """
     with open(path) as f:
         text = f.read()
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    text = re.sub(r'(?m)(^|\s)(#|//).*$', r'\1', text)
 
-    def find_int(key):
-        m = re.search(rf"\b{key}\s*=\s*(-?\d+)", text)
+    def find_int(key, default=None):
+        m = re.search(rf"\b{key}\s*=\s*(0[xX][0-9a-fA-F]+|-?\d+)[lL]?\s*[;,]", text)
         if not m:
-            raise ValueError(f"{key} not found in {path}")
-        return int(m.group(1))
+            if default is None:
+                raise ValueError(f"{key} not found in {path}")
+            import warnings
+            warnings.warn(f"{key} not found in {path}; using {default}")
+            return default
+        s = m.group(1)
+        return int(s, 16) if s.lower().startswith('0x') else int(s)
+
+    m = re.search(r'\bplmn_list\s*=', text)
+    if not m:
+        raise ValueError(f"plmn_list not found in {path}")
+    chunk = text[m.end():m.end() + 600]
+    mcc_m = re.search(r'\bmcc\s*=\s*(\d+)', chunk)
+    mnc_m = re.search(r'\bmnc\s*=\s*(\d+)', chunk)
+    mnc_len_m = re.search(r'\bmnc_length\s*=\s*(\d+)', chunk)
+    if not (mcc_m and mnc_m):
+        raise ValueError(f"mcc/mnc not found in plmn_list of {path}")
+    mcc = mcc_m.group(1).zfill(3)
+    mnc = mnc_m.group(1).zfill(int(mnc_len_m.group(1)) if mnc_len_m else 2)
 
     return {
         'PhysCellID': find_int('physCellId'),
         'ARFCN': find_int('dl_absoluteFrequencyPointA'),
         'SCS': find_int('dl_subcarrierSpacing'),
+        'mcc': mcc,
+        'mnc': mnc,
+        'nr_cell_identity': find_int('nr_cellid', default=0),
+        'tracking_area_code': find_int('tracking_area_code'),
     }
+
+def neighbouring_gnb_indices(serving_gnb_conf):
+    """
+    Given the conf of the gNB a UE is camped on, returns the indices into
+    config.GNB_CONF_PATHS of every OTHER gNB -- the "neighbour" set to hand
+    to generate_lpp_provide_assistance_data() so the LMF reports serving-area
+    TRPs instead of unconditionally reporting every configured TRP.
+
+    Matched by PLMN + NR cell identity.
+    """
+    serving = read_gnb_cell_info(serving_gnb_conf)
+    key = (serving['mcc'], serving['mnc'], serving['nr_cell_identity'])
+    indices = []
+    for i, path in enumerate(config.GNB_CONF_PATHS):
+        cell = read_gnb_cell_info(path)
+        if (cell['mcc'], cell['mnc'], cell['nr_cell_identity']) != key:
+            indices.append(i)
+    if not indices:
+        import warnings
+        warnings.warn(
+            f"neighbouring_gnb_indices: no gNB in GNB_CONF_PATHS differs from "
+            f"{serving_gnb_conf}'s cell -- returning the full list")
+        return list(range(len(config.GNB_CONF_PATHS)))
+    return indices
+
+def neighbouring_gnb_indices_by_pci(phys_cell_id):
+    """
+    Given a UE-reported PhysCellID (NR-DL-TDOA-RequestAssistanceData-r16's
+    nr-PhysCellID-r16 -- the only serving-cell field this standard request
+    message carries), returns the indices into config.GNB_CONF_PATHS of every
+    OTHER gNB.
+
+    PCI-only matching is what the standard request actually gives us, so it's
+    used when it's unambiguous. If more than one entry in GNB_CONF_PATHS shares
+    this PCI,PCI alone can't tell them apart, so this falls back to matching by PLMN +
+    NR cell identity instead, via neighbouring_gnb_indices(), using whichever
+    conf among the PCI-matches has the lowest index as the assumed serving one.
+    """
+    matches = [i for i, p in enumerate(config.GNB_CONF_PATHS)
+               if read_gnb_cell_info(p)['PhysCellID'] == phys_cell_id]
+
+    if len(matches) == 0:
+        import warnings
+        warnings.warn(
+            f"neighbouring_gnb_indices_by_pci: no gNB in GNB_CONF_PATHS has "
+            f"PhysCellID {phys_cell_id} -- returning the full list")
+        return list(range(len(config.GNB_CONF_PATHS)))
+
+    if len(matches) == 1:
+        return [i for i in range(len(config.GNB_CONF_PATHS)) if i != matches[0]]
+
+    import warnings
+    warnings.warn(
+        f"neighbouring_gnb_indices_by_pci: PhysCellID {phys_cell_id} is not "
+        f"unique across GNB_CONF_PATHS (indices {matches}) -- PCI alone can't "
+        f"identify the serving cell; falling back to PLMN+NCI matching using "
+        f"index {matches[0]}")
+    return neighbouring_gnb_indices(config.GNB_CONF_PATHS[matches[0]])
 
 def _effective_prs_bandwidth_rb(configured_num_rb):
     """
@@ -269,7 +353,7 @@ def _build_prs_resource_set(cfg, resource_set_id=4, scs=0, phys_cell_id=None):
 
     return resource_set
 
-def generate_lpp_provide_assistance_data(method):
+def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_pci=None):
 
     match method:
 
@@ -410,6 +494,13 @@ def generate_lpp_provide_assistance_data(method):
 
             prs_configs = read_prs_config()
 
+            if serving_gnb_conf is not None:
+                keep = set(neighbouring_gnb_indices(serving_gnb_conf))
+                prs_configs = {i: cfg for i, cfg in prs_configs.items() if i in keep}
+            elif serving_pci is not None:
+                keep = set(neighbouring_gnb_indices_by_pci(serving_pci))
+                prs_configs = {i: cfg for i, cfg in prs_configs.items() if i in keep}
+            
             assistance_data_per_freq = []
 
             for trp_index, cfg in prs_configs.items():
@@ -426,16 +517,9 @@ def generate_lpp_provide_assistance_data(method):
                     'nr-PhysCellID-r16': cell_info['PhysCellID'],
 
                     'nr-CellGlobalID-r16': {
-                        'mcc-r15': [
-                            int(config.mcc[0]),
-                            int(config.mcc[1]),
-                            int(config.mcc[2])
-                        ],
-                        'mnc-r15': [
-                            int(config.mnc[0]),
-                            int(config.mnc[1])
-                        ],
-                        'nr-cellidentity-r15': (5, 36)
+                        'mcc-r15': [int(d) for d in cell_info['mcc']],
+                        'mnc-r15': [int(d) for d in cell_info['mnc']],
+                        'nr-cellidentity-r15': (cell_info['nr_cell_identity'], 36)
                     },
 
                     'nr-ARFCN-r16': cell_info['ARFCN'],
