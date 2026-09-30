@@ -598,9 +598,10 @@ def handleLPP(lpp_message_asn):
                     try:
                         assistancedata = handle_request_assistance_data(first_value)
                     except:
-                        log.logger_LPP.error('Error during handle_request_assistance_data function')
+                        log.logger_LPP.error('Error during handle_request_assistance_data function', exec_info = True)
                         ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
                         endTransaction = True
+                        assistancedata = 'error'
                     if assistancedata == 'error':
                         log.logger_LPP.error('Error during handle_request_assistance_data function')
                         ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")

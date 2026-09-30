@@ -1,7 +1,8 @@
 import socket
 import random
 
-from LPP_message_gen import generate_lpp_provide_assistance_data, generate_LPP_MESSAGE, generate_lpp_request_assistance_data
+from LPP_message_gen import generate_lpp_provide_assistance_data, generate_LPP_MESSAGE, generate_lpp_request_assistance_data, read_gnb_cell_info
+import config
 from LPP_handler import encodeLPP
 from supl_message import (
     build_set_session_id,
@@ -24,7 +25,8 @@ transaction_id = random.randint(1, 200)
 
 session_id_value = {'setSessionID': build_set_session_id(session_id=transaction_id, client_name='oai-ue-sim')}
 
-body = generate_lpp_request_assistance_data('nr-DL-TDOA-RequestAssistanceData-r16')
+serving_pci = read_gnb_cell_info(config.GNB_CONF_PATHS[0])['PhysCellID']
+body = generate_lpp_request_assistance_data('nr-DL-TDOA-RequestAssistanceData-r16', phys_cell_id=serving_pci)
 full_msg = generate_LPP_MESSAGE(transaction_id, True, 0, lpp_message_body=body)
 lpp_bytes = encodeLPP(full_msg)
 
