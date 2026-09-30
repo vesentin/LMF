@@ -279,10 +279,10 @@ def handle_request_assistance_data(body):
                         BodyX= RequestAssistanceData[items]
                         for items2 in BodyX:
                             log.logger_LPP.debug(f'Assistance data requested: {items2}')
-                        
-                        result = lpp_gen.generate_lpp_provide_assistance_data(items)
-                        log.logger_LPP.debug(f'Assistance data provided: {result}')                        
 
+                        result = lpp_gen.generate_lpp_provide_assistance_data(
+                            items, serving_pci=BodyX.get('nr-PhysCellID-r16'))
+                        log.logger_LPP.debug(f'Assistance data provided: {result}')
                     case _:
                         log.logger_LPP.error('No assistance data for this {items} method')
                         result = 'error'
