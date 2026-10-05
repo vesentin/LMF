@@ -16,7 +16,7 @@ CN_Used= "OAI"
 
 match CN_Used:
     case "OAI": # IP/PORT FOR OAI core network
-        AMF_IP = "192.168.70.138"
+        AMF_IP = "192.168.70.132"
         AMF_PORT = 8080
     case "free5gc":     # IP/PORT FOR free5gc
         AMF_IP = "10.100.200.50"
@@ -27,6 +27,10 @@ match CN_Used:
 
 # identifiuer of lmf network function
 nfID = "97bfff10-1add-4a3f-b8d6-6b08a3718129"
+# Seconds between attempts to subscribe to the AMF for non-UE N2 (NRPPa) messages,
+# until the first subscription succeeds (the AMF may start after the LMF)
+NON_UE_SUB_RETRY_S = 5
+
 
 # the maximum age of the estimation in minutes
 MaxAgeOfEstimation= 5 
