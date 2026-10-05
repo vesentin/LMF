@@ -9,6 +9,7 @@ import custom_log as log
 from LPP_message_gen import *
 from LPP_handler import *
 from NRPPa_handler import *
+import lmf_instance as lmf
 
 import socket
 from supl_message import (
@@ -66,7 +67,7 @@ def handle_multipart_related(headerCont, msg):
                 else:
                     log.logger_LMF_API.warning('Content-Id in the multipart body not equal in the Json Body')
                     body=part_divided[4]
-                    log.logger_LMF_API.debug('Binary body (NRPPa): {body}')
+                    log.logger_LMF_API.debug(f'Binary body (NRPPa): {body}')
                     #handle the NRPPa message 
                     handlerNRPPa(body)
                     
@@ -329,4 +330,5 @@ def supl_server_loop():
                 log.logger_LMF_API.error(f"SUPL session error: {e}")
 if __name__ == '__main__':
     threading.Thread(target=supl_server_loop, daemon=True).start()
+    threading.Thread(target=lmf.non_ue_subscription_loop, daemon=True).start()
     app.run(host=config.LMF_IP, port=config.LMF_API_PORT, debug=False)

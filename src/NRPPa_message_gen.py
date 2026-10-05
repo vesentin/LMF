@@ -314,22 +314,23 @@ def PositioningDeactivation(nrppatransactionID,value):
 
 
 #### TRP INFORMATION TX
-def TRPInformationRequest(nrppatransactionID,val):
+def TRPInformationRequest(nrppatransactionID,val, trp_ids=None):
     value=[]
     for i in val:
         value.append( {'id': 57, 'criticality': 'reject', 'value': ('TRPInformationTypeItem', i )})
 
+    protocolIEs = []
+    #TRP List is optional (TS 38.455), when omitted the gNB reports all its TRPs
+    protocolIEs.append({'id': IEs_id.id_TRPInformationTypeListTRPReq.value, 'criticality': 'reject',
+                        'value': ('TRPInformationTypeListTRPReq', value)})
+
     nrppa_message = ('initiatingMessage', {
-            'procedureCode': ProcedureCodeEP.id_tRPInformationExchange.value, 
+            'procedureCode': ProcedureCodeEP.id_tRPInformationExchange.value,
             'criticality': 'reject',
-            'nrppatransactionID': nrppatransactionID, 
-            'value': ('TRPInformationRequest', {'protocolIEs' : [ {'id': IEs_id.id_TRPList.value , 'criticality': 'ignore', 'value': ('TRPList',[{'tRP-ID':1}]  )},
-                                                                  {'id': IEs_id.id_TRPInformationTypeListTRPReq.value , 'criticality': 'reject', 'value': ('TRPInformationTypeListTRPReq', value )}
-                                                                        ]})})
-    
+            'nrppatransactionID': nrppatransactionID,
+            'value': ('TRPInformationRequest', {'protocolIEs': protocolIEs})})
+
     return nrppa_message
-
-
 
 ## PRSConfigurationRequest
 def PRSConfigurationRequest(nrppatransactionID,prsConfigRequestType,trp_id):

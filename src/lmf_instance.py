@@ -127,8 +127,8 @@ class Lmf():
     nfID = config.nfID
     amf_ip = config.AMF_IP
     amf_port = config.AMF_PORT
-    lmf_ip = config.LMF_IP
-    lmf_port = config.LMF_PORT
+    lmf_ip = config.LMF_PUBLIC_IP
+    lmf_port = config.LMF_API_PORT
 
     def create(self, jdata, _transaction_number,method_preference):
         self.jdata = jdata
@@ -263,28 +263,62 @@ class Lmf():
 
 
     def subscribe_N2_NonUEAssociated(self):
-        N1N2_SUBSCRIBE_JSON = {
-            "anTypeList": ["3GPP_ACCESS"],
-            "n2InformationClass": "NRPPa",
-            "n2NotifyCallbackUri": f"http://{self.lmf_ip}:{self.lmf_port}/nlmf/notifyN2",
-            "nfId": f"{uuid.uuid4()}"
-        }
-
-        # Subscribe to N2 messages Non UE Associated
-        _url = f"http://{self.amf_ip}:{self.amf_port}/namf-comm/v1/non-ue-n2-messages/subscriptions" 
-        try:
-            request = requests.post(_url, json=N1N2_SUBSCRIBE_JSON)
-            log.logger_LMF_istance.info(f"request.text: {request.text}")
-            if request.status_code != 200 and request.status_code != 201:
-                raise Exception("N1N2 subscription failed")
-            log.logger_LMF_istance.info(f"N1N2 Non UE Associated subscription OK")
-        except Exception as e:
-            log.logger_LMF_istance.error(f"ERROR: [subscribeN1N2] - {e}")
-            return
-        return request.status_code
+            # The LMF now keeps a single non-UE subscription (see ensure_non_ue_subscription);
+            # this method is kept so existing callers keep working.
+            return ensure_non_ue_subscription()
 
     def cancel_location(self):
         pass
+
+# ---- Non-UE-associated N2 (NRPPa) subscription: one per LMF process, not one per session ----
+_non_ue_sub_id = None
+_non_ue_sub_lock = threading.Lock()
+
+def _subscribe_non_ue_n2():
+    """Send one NonUeN2InfoSubscribe to the AMF. Returns the subscription ID, or None on failure."""
+    body = {
+        "anTypeList": ["3GPP_ACCESS"],
+        "n2InformationClass": "NRPPa",
+        "n2NotifyCallbackUri": f"http://{config.LMF_PUBLIC_IP}:{config.LMF_API_PORT}/nlmf/notifyN2",
+        "nfId": config.nfID
+    }
+    url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/non-ue-n2-messages/subscriptions"
+    try:
+        r = requests.post(url, json=body, timeout=5)
+    except requests.RequestException as e:
+        log.logger_LMF_istance.warning(f"Non-UE N2 subscription: AMF not reachable ({e})")
+        return None
+    if r.status_code not in (200, 201):
+        log.logger_LMF_istance.error(f"Non-UE N2 subscription refused: {r.status_code} {r.text}")
+        return None
+    try:
+        sub_id = r.json().get("n2NotifySubscriptionId")
+    except ValueError:
+        sub_id = None
+    if not sub_id:
+        log.logger_LMF_istance.error(f"Non-UE N2 subscription: no subscription ID in answer: {r.text}")
+        return None
+    log.logger_LMF_istance.info(f"Non-UE N2 subscription OK, id {sub_id}")
+    return sub_id
+
+def ensure_non_ue_subscription():
+    """Subscribe if not already subscribed. Returns True if a subscription exists."""
+    global _non_ue_sub_id
+    with _non_ue_sub_lock:
+        if _non_ue_sub_id is None:
+            _non_ue_sub_id = _subscribe_non_ue_n2()
+        return _non_ue_sub_id is not None
+
+def invalidate_non_ue_subscription():
+    """Forget the current subscription (e.g. the AMF restarted); the next ensure call re-subscribes."""
+    global _non_ue_sub_id
+    with _non_ue_sub_lock:
+        _non_ue_sub_id = None
+
+def non_ue_subscription_loop():
+    """Startup helper: retry until the AMF accepts the subscription, then stop."""
+    while not ensure_non_ue_subscription():
+        time.sleep(config.NON_UE_SUB_RETRY_S)
 
 def send_nonUEassociated(_encoded_message):
     _url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/non-ue-n2-messages/transfer"
@@ -308,9 +342,6 @@ def send_nonUEassociated(_encoded_message):
     log.logger_LMF_istance.debug(f"Response: {response}")
     
     return response
-
-
-
 
 def send_message(_encoded_message, proto, imsi,lcs_correlation=None, host=None, port=None):
     _url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/ue-contexts/imsi-{imsi}/n1-n2-messages"
@@ -478,7 +509,7 @@ def determine_location(jdata, requested_methods, methods_preference, thread_num=
         
         # Subscribe to N1/N2 messages
         lmf.subscribe_N1N2()
-        lmf.subscribe_N2_NonUEAssociated() 
+        ensure_non_ue_subscription()
         
 
         # ---------- send LPP RequestCabailities message and wait for N1/N2 message ----------
