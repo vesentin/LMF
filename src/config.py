@@ -31,9 +31,20 @@ nfID = "97bfff10-1add-4a3f-b8d6-6b08a3718129"
 # until the first subscription succeeds (the AMF may start after the LMF)
 NON_UE_SUB_RETRY_S = 5
 
+# Maximum age (seconds) of the TRP table before a new request re-queries the gNBs.
+# Implementation choice (not defined by TS 38.455). 5 minutes is enough for static
+# TRPs; kept configurable for future, more realistic scenarios (e.g. NTN, where a
+# TRP on a moving satellite changes position continuously).
+TRP_TABLE_MAX_AGE_S = 300
 
 # the maximum age of the estimation in minutes
 MaxAgeOfEstimation= 5 
+
+# NRPPa transaction ID ranges (NRPPATransactionID is 0..32767 in TS 38.455):
+#   0..255      used by UE positioning sessions (LMF_COMPUTING_DB)
+#   1000..32767 used by TRP table queries (trp_table.py)
+TRP_TXN_MIN = 1000
+TRP_TXN_MAX = 32767
 
 # information of the cell where the UE is connected
 mcc = "001"
