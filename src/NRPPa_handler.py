@@ -6,6 +6,7 @@ import config
 import copy
 import custom_log as log
 import lmf_instance as lmf
+import trp_table
 import HandleLocation as HandleLocation
 from datetime import datetime, timezone
 import time
@@ -473,6 +474,13 @@ def handlerNRPPa(nrppa_message_asn):
     log.logger_NRPPa.debug(f"entire body ----> {body_message}")
 
     nrppatransactionID = body_message['nrppatransactionID']
+    # TRP Information Exchange answers for the TRP table are non-UE-associated:
+    # they do not belong to a UE positioning session, so hand them to the table and stop here.
+    if (body_message.get('procedureCode') == ProcedureCodeEP.id_tRPInformationExchange.value
+            and trp_table.is_table_transaction(nrppatransactionID)):
+        trp_table.handle_nrppa_answer(message_type, body_message)
+        return "OK"   
+ 
     lmf_istance=lmf.Lmf().get(nrppatransactionID)
 
     match message_type :
