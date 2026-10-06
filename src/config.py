@@ -40,11 +40,20 @@ TRP_TABLE_MAX_AGE_S = 300
 # the maximum age of the estimation in minutes
 MaxAgeOfEstimation= 5 
 
-# NRPPa transaction ID ranges (NRPPATransactionID is 0..32767 in TS 38.455):
-#   0..255      used by UE positioning sessions (LMF_COMPUTING_DB)
-#   1000..32767 used by TRP table queries (trp_table.py)
-TRP_TXN_MIN = 1000
-TRP_TXN_MAX = 32767
+# NRPPa transaction ID ranges. NRPPATransactionID is 0..32767 in TS 38.455, but the
+# OAI gNB copies it into an 8-bit F1AP transaction ID (0..255, TS 38.473) without
+# translation, so IDs above 255 are truncated and the response is lost (the gNB then
+# crashes). Workaround: keep every NRPPa transaction ID within 0..255.
+#   0..199      used by UE positioning sessions (LMF_COMPUTING_DB)
+#   200..255    used by TRP table queries (trp_table.py)
+TRP_TXN_MIN = 200
+TRP_TXN_MAX = 255
+# TRP information types requested from the gNBs. Only types the OAI gNB supports:
+# requesting any other type (e.g. 'pRSConfig') currently stops the gNB (AssertFatal).
+# 'pRSConfig' is to be added with the PRS work.
+TRP_INFO_TYPES = ['nrPCI', 'nG-RAN-CGI', 'arfcn', 'geoCoord']
+# How long to wait for all gNBs to answer a TRP query (seconds)
+TRP_QUERY_TIMEOUT_S = 2.0
 
 # information of the cell where the UE is connected
 mcc = "001"

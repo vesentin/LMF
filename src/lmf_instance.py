@@ -6,7 +6,11 @@ from threading import Thread, Event
 import time
 import LPP_message_gen as lpp_gen
 from pycrate_asn1dir import LPP
+import NRPPa_message_gen as gen_nrppa
+import nrppa_codec
+import trp_table
 import json
+import copy
 from datetime import datetime, timezone, timedelta
 import custom_log as log
 import random
@@ -320,11 +324,24 @@ def non_ue_subscription_loop():
     while not ensure_non_ue_subscription():
         time.sleep(config.NON_UE_SUB_RETRY_S)
 
-def send_nonUEassociated(_encoded_message):
+def send_nonUEassociated(_encoded_message, target=None):
+    """
+    Send a non-UE-associated NRPPa PDU to the AMF.
+    target: a dict from read_gnb_cell_info() (mcc, mnc, trackig_area_code, gnb_id);
+            if None, the default gNB from config.py is used.
+    The OAI AMF selects the GNB by gNB ID only.
+    """
+
     _url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/non-ue-n2-messages/transfer"
     boundary = str(uuid.uuid4())
     content_type = "multipart/related; boundary=" + boundary
-    json_message = json.dumps(NRPPa_JSON_NON_UE)
+    body= copy.deepcopy(NRPPa_JSON_NON_UE)
+    if target is not None:
+        plmn = {"mcc": target['mcc'], "mnc": target['mnc']}
+        body["taiList"] = [{"plmnId": plmn, "tac": f"{target['tracking_area_code']:06X}"}]
+        body["globalRanNodeList"] = [{"plmnId": plmn,
+                                      "gNbId": {"bitLength": 32, "gNBValue": f"{target['gnb_id']:08X}"}}]
+    json_message = json.dumps(body)
     protoBinary= b'Content-Type: application/vnd.3gpp.ngap'
     content_id = b"Content-Id: ngap"
     
@@ -338,10 +355,46 @@ def send_nonUEassociated(_encoded_message):
     log.logger_LMF_istance.debug(whole_message)
     log.logger_LMF_istance.debug(f'END HTTP message:')
     log.logger_LMF_istance.info(f'NNN UE ASSOCIATED HTTP message send to {_url}')
-    response = requests.post(_url, headers={"Content-Type": content_type}, data=whole_message)
+    response = requests.post(_url, headers={"Content-Type": content_type}, data=whole_message, timeout=5)
     log.logger_LMF_istance.debug(f"Response: {response}")
     
     return response
+def query_trp_information(gnb_indices=None, timeout=None):
+    """
+    Ask gNBs (indices into config.GNB_CONF_PATHS; default: all) for their TRP information
+    via NRPPa TRP Information Exchange, and wait for the answers to reach the TRP table.
+    Returns True only if every queried gNB answered before the timeout.
+    """
+    gnb_indices = list(range(len(config.GNB_CONF_PATHS)) if gnb_indices is None else gnb_indices)
+    if timeout is None:
+        timeout = config.TRP_QUERY_TIMEOUT_S
+
+    if not ensure_non_ue_subscription():
+        log.logger_LMF_istance.warning("TRP query: no non-UE subscription (AMF unreachable?)")
+        return False
+
+    txns = []
+    for i in gnb_indices:
+        cell = lpp_gen.read_gnb_cell_info(config.GNB_CONF_PATHS[i])
+        txn = trp_table.new_transaction(i)
+        try:
+            request = gen_nrppa.TRPInformationRequest(txn, config.TRP_INFO_TYPES)
+            resp = send_nonUEassociated(nrppa_codec.encode(request), target=cell)
+            sent = resp.status_code in (200, 202)
+        except Exception as e:
+            log.logger_LMF_istance.error(f"TRP query to gNB index {i}: {e}")
+            sent = False
+        if sent:
+            txns.append(txn)
+            log.logger_LMF_istance.info(
+                f"TRP query sent to gNB index {i} (gNB ID {cell['gnb_id']:#x}), transaction {txn}")
+        else:
+            trp_table.handle_failure(txn)      # forget it, mark the table stale
+
+    if not txns:
+        return False
+    answered = trp_table.wait_until_answered(txns, timeout)
+    return answered and len(txns) == len(gnb_indices)
 
 def send_message(_encoded_message, proto, imsi,lcs_correlation=None, host=None, port=None):
     _url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/ue-contexts/imsi-{imsi}/n1-n2-messages"
@@ -494,14 +547,14 @@ def determine_location(jdata, requested_methods, methods_preference, thread_num=
     if start_new_localisation:
         # Generate a transaction_number
 
-        transaction_number = random.randint(0, 255)
+        transaction_number = random.randint(0, config.TRP_TXN_MIN - 1)
         
         # Check if the transaction_number has already been used
         while transaction_number in LMF_COMPUTING_DB.keys():
             # If I have used all transaction_numbers, wait for 10 seconds
-            if len(LMF_COMPUTING_DB) == 255:
+            if len(LMF_COMPUTING_DB) >= config.TRP_TXN_MIN:
                 time.sleep(10)
-            transaction_number = random.randint(0, 255)
+            transaction_number = random.randint(0, config.TRP_TXN_MIN - 1)
         log.logger_LMF_istance.info(f"Data received in user request: {jdata}")
         
         # Now I obtain an lmf variable useful to start the localization procedure
