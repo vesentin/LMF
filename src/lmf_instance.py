@@ -324,23 +324,30 @@ def non_ue_subscription_loop():
     while not ensure_non_ue_subscription():
         time.sleep(config.NON_UE_SUB_RETRY_S)
 
-def send_nonUEassociated(_encoded_message, target=None):
+def send_nonUEassociated(_encoded_message, targets=None):
     """
     Send a non-UE-associated NRPPa PDU to the AMF.
-    target: a dict from read_gnb_cell_info() (mcc, mnc, trackig_area_code, gnb_id);
-            if None, the default gNB from config.py is used.
-    The OAI AMF selects the GNB by gNB ID only.
+    targets: list of dicts from read_gnb_cell_info() (mcc, mnc, tracking_area_code, gnb_id);
+             if None, the default gNB from config.py is used (previous behaviour).
+    Per TS 29.518 sec. 5.2.2.4.1 the AMF forwards the PDU to the gNBs in globalRanNodeList;
+    the OAI AMF (v2.2.1) ignores the list and forwards to all connected gNBs.
     """
 
     _url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/non-ue-n2-messages/transfer"
     boundary = str(uuid.uuid4())
     content_type = "multipart/related; boundary=" + boundary
     body= copy.deepcopy(NRPPa_JSON_NON_UE)
-    if target is not None:
-        plmn = {"mcc": target['mcc'], "mnc": target['mnc']}
-        body["taiList"] = [{"plmnId": plmn, "tac": f"{target['tracking_area_code']:06X}"}]
-        body["globalRanNodeList"] = [{"plmnId": plmn,
-                                      "gNbId": {"bitLength": 32, "gNBValue": f"{target['gnb_id']:08X}"}}]
+    if targets:
+        tais, nodes = [], []
+        for t in targets:
+            plmn = {"mcc": t['mcc'], "mnc": t['mnc']}
+            tai = {"plmnId": plmn, "tac": f"{t['tracking_area_code']:06X}"}
+            if tai not in tais:                  # one entry per distinct tracking area
+                tais.append(tai)
+            nodes.append({"plmnId": plmn,
+                          "gNbId": {"bitLength": 32, "gNBValue": f"{t['gnb_id']:08X}"}})
+        body["taiList"] = tais
+        body["globalRanNodeList"] = nodes
     json_message = json.dumps(body)
     protoBinary= b'Content-Type: application/vnd.3gpp.ngap'
     content_id = b"Content-Id: ngap"
@@ -359,10 +366,13 @@ def send_nonUEassociated(_encoded_message, target=None):
     log.logger_LMF_istance.debug(f"Response: {response}")
     
     return response
+
 def query_trp_information(gnb_indices=None, timeout=None):
     """
     Ask gNBs (indices into config.GNB_CONF_PATHS; default: all) for their TRP information
-    via NRPPa TRP Information Exchange, and wait for the answers to reach the TRP table.
+    with ONE NRPPa TRP Information Request listing all of them as targets, and wait until
+    each of them has answered. Answers share the transaction ID, so they are matched to
+    gNBs by cell identity (PLMN + NR cell identity from each gNB's .conf).
     Returns True only if every queried gNB answered before the timeout.
     """
     gnb_indices = list(range(len(config.GNB_CONF_PATHS)) if gnb_indices is None else gnb_indices)
@@ -373,28 +383,24 @@ def query_trp_information(gnb_indices=None, timeout=None):
         log.logger_LMF_istance.warning("TRP query: no non-UE subscription (AMF unreachable?)")
         return False
 
-    txns = []
-    for i in gnb_indices:
-        cell = lpp_gen.read_gnb_cell_info(config.GNB_CONF_PATHS[i])
-        txn = trp_table.new_transaction(i)
-        try:
-            request = gen_nrppa.TRPInformationRequest(txn, config.TRP_INFO_TYPES)
-            resp = send_nonUEassociated(nrppa_codec.encode(request), target=cell)
-            sent = resp.status_code in (200, 202)
-        except Exception as e:
-            log.logger_LMF_istance.error(f"TRP query to gNB index {i}: {e}")
-            sent = False
-        if sent:
-            txns.append(txn)
-            log.logger_LMF_istance.info(
-                f"TRP query sent to gNB index {i} (gNB ID {cell['gnb_id']:#x}), transaction {txn}")
-        else:
-            trp_table.handle_failure(txn)      # forget it, mark the table stale
+    cells = {i: lpp_gen.read_gnb_cell_info(config.GNB_CONF_PATHS[i]) for i in gnb_indices}
+    cell_to_gnb = {(c['mcc'], c['mnc'], c['nr_cell_identity']): i for i, c in cells.items()}
+    txn = trp_table.new_transaction(gnb_indices, cell_to_gnb)
 
-    if not txns:
+    try:
+        request = gen_nrppa.TRPInformationRequest(txn, config.TRP_INFO_TYPES)
+        resp = send_nonUEassociated(nrppa_codec.encode(request), targets=list(cells.values()))
+        sent = resp.status_code in (200, 202)
+    except Exception as e:
+        log.logger_LMF_istance.error(f"TRP query: sending failed: {e}")
+        sent = False
+
+    if not sent:
+        trp_table.cancel_transaction(txn)
         return False
-    answered = trp_table.wait_until_answered(txns, timeout)
-    return answered and len(txns) == len(gnb_indices)
+
+    log.logger_LMF_istance.info(f"TRP query sent to gNB indices {gnb_indices}, transaction {txn}")
+    return trp_table.wait_until_answered([txn], timeout)
 
 def send_message(_encoded_message, proto, imsi,lcs_correlation=None, host=None, port=None):
     _url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/ue-contexts/imsi-{imsi}/n1-n2-messages"
