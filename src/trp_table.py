@@ -77,21 +77,37 @@ def parse_trp_information(trp_info: dict, gnb_index: Optional[int] = None) -> Tr
 
 _cond = threading.Condition()            # a lock plus wait/notify
 _entries = {}                            # trp_id -> TrpEntry
-_pending = {}                            # transaction ID -> gnb_index (requests not answered yet)
+_pending = {}                            # transaction ID -> set of gNB indices still expected
+_cell_to_gnb = {}                        # (mcc, mnc, nr_cell_id) -> gNB index, set by the query
 _stale = True                            # True = re-query on the next request
 _next_txn = config.TRP_TXN_MIN
 
 
-def new_transaction(gnb_index: int) -> int:
-    """Pick a free transaction ID from the TRP range and record it as pending."""
+def new_transaction(expected_gnbs, cell_to_gnb: dict) -> int:
+    """
+    Pick a free transaction ID and record which gNBs are expected to answer it.
+    cell_to_gnb maps (mcc, mnc, nr_cell_id) -> gNB index; it identifies the gNB
+    behind each answer, since all answers to one request share its transaction ID.
+    """
     global _next_txn
     with _cond:
+        _cell_to_gnb.clear()
+        _cell_to_gnb.update(cell_to_gnb)
         while _next_txn in _pending:
             _next_txn = _next_txn + 1 if _next_txn < config.TRP_TXN_MAX else config.TRP_TXN_MIN
         txn = _next_txn
         _next_txn = _next_txn + 1 if _next_txn < config.TRP_TXN_MAX else config.TRP_TXN_MIN
-        _pending[txn] = gnb_index
+        _pending[txn] = set(expected_gnbs)
         return txn
+
+
+def cancel_transaction(txn: int):
+    """The request could not be sent: forget it and mark the table stale."""
+    global _stale
+    with _cond:
+        _pending.pop(txn, None)
+        _stale = True
+        _cond.notify_all()
 
 
 def is_table_transaction(txn: int) -> bool:
@@ -100,42 +116,59 @@ def is_table_transaction(txn: int) -> bool:
 
 
 def handle_response(txn: int, trp_list: list):
-    """Store the TRPs of one TRP INFORMATION RESPONSE and wake the waiters."""
+    """Store the TRPs of one TRP INFORMATION RESPONSE, identify the gNB by cell identity, wake the waiters."""
     global _stale
     with _cond:
-        gnb_index = _pending.pop(txn, None)
-        if gnb_index is None:
+        expected = _pending.get(txn)
+        if expected is None:
             log.logger_NRPPa.warning(f"TRP table: response for unknown or expired transaction {txn}, ignored")
             return
         for item in trp_list:
-            entry = parse_trp_information(item['tRPInformation'], gnb_index)
+            entry = parse_trp_information(item['tRPInformation'])
+            entry.gnb_index = _cell_to_gnb.get((entry.mcc, entry.mnc, entry.nr_cell_id))
+            if entry.gnb_index is None:
+                log.logger_NRPPa.warning(
+                    f"TRP table: TRP {entry.trp_id} has unknown cell identity "
+                    f"({entry.mcc}, {entry.mnc}, {entry.nr_cell_id}); stored without gNB index")
+            elif entry.gnb_index not in expected:
+                log.logger_NRPPa.info(
+                    f"TRP table: TRP {entry.trp_id} from gNB index {entry.gnb_index} was not expected "
+                    f"(or already answered); stored anyway")
+            expected.discard(entry.gnb_index)
             _entries[entry.trp_id] = entry
-            log.logger_NRPPa.info(f"TRP table: stored TRP {entry.trp_id} from gNB index {gnb_index}")
+            log.logger_NRPPa.info(f"TRP table: stored TRP {entry.trp_id} from gNB index {entry.gnb_index}")
+        if not expected:
+            del _pending[txn]
         if not _pending:
             _stale = False
         _cond.notify_all()
 
 
 def handle_failure(txn: int):
-    """A TRP INFORMATION FAILURE: forget the request, mark the table stale, wake the waiters."""
+    """
+    A TRP INFORMATION FAILURE. It carries no cell identity, so the failing gNB cannot be
+    identified: mark the table stale and keep waiting for the other gNBs (the timeout ends the wait).
+    """
     global _stale
     with _cond:
-        gnb_index = _pending.pop(txn, None)
         _stale = True
-        log.logger_NRPPa.warning(f"TRP table: TRP information failure for transaction {txn} (gNB index {gnb_index})")
+        log.logger_NRPPa.warning(f"TRP table: TRP information failure for transaction {txn} "
+                                 f"(failing gNB unknown); still waiting for the others")
         _cond.notify_all()
 
 
 def wait_until_answered(txns: list, timeout: float) -> bool:
-    """Block until all txns are answered (True), or the timeout expires (False)."""
+    """Block until all txns are complete (True), or the timeout expires (False)."""
     global _stale
     with _cond:
         done = _cond.wait_for(lambda: not any(t in _pending for t in txns), timeout)
         if not done:
             for t in txns:
-                _pending.pop(t, None)        # a late answer will now be ignored
+                missing = _pending.pop(t, None)
+                if missing:
+                    log.logger_NRPPa.warning(f"TRP table: timeout on transaction {t}, "
+                                             f"no answer from gNB indices {sorted(missing)}")
             _stale = True
-            log.logger_NRPPa.warning(f"TRP table: timeout waiting for transactions {txns}")
         return done
 
 
@@ -152,6 +185,7 @@ def snapshot() -> list:
     """A copy of the current entries, safe to use without holding the lock."""
     with _cond:
         return [replace(e) for e in _entries.values()]
+
 
 def handle_nrppa_answer(message_type: str, body: dict):
     """Route a decoded TRP Information Exchange answer (response or failure) to the table."""
