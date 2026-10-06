@@ -7,6 +7,7 @@ import copy
 import custom_log as log
 import lmf_instance as lmf
 import trp_table
+import nrppa_codec
 import HandleLocation as HandleLocation
 from datetime import datetime, timezone
 import time
@@ -16,9 +17,7 @@ def decodeNRPPa(NRPPa_message_ANS1):
     try:
         #decode the nrppa messagge from asn1
         log.logger_NRPPa.info(' Decoded the NRPPa message')
-        M=NRPPa.NRPPA_PDU_Descriptions.NRPPA_PDU
-        M.from_aper(NRPPa_message_ANS1)
-        decoded_message_NRPPa = copy.deepcopy(M())
+        decoded_message_NRPPa = nrppa_codec.decode(NRPPa_message_ANS1)
         return decoded_message_NRPPa
     except:
         log.logger_NRPPa.error('Error in decoding NRPPa message')
@@ -28,9 +27,7 @@ def encodeNRPPa(NRPPa_message):
     try:
         #encode the nrppa messagge from asn1
         log.logger_NRPPa.info(' Encoded the NRPPa message')
-        M=NRPPa.NRPPA_PDU_Descriptions.NRPPA_PDU
-        M.set_val(NRPPa_message)
-        enc=M.to_aper()
+        enc= nrppa_codec.encode(NRPPa_message)
         return enc
     except:
         log.logger_NRPPa.error('Error in encoding NRPPa message')

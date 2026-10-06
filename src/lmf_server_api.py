@@ -10,6 +10,8 @@ from LPP_message_gen import *
 from LPP_handler import *
 from NRPPa_handler import *
 import lmf_instance as lmf
+import trp_table
+import dataclasses
 
 import socket
 from supl_message import (
@@ -263,9 +265,12 @@ def hande_http_location_context_transfer():
     log.logger_LMF_API.warning(f'Services of location-context-transfer not supported')
     return "",500
 
-
-
-
+@app.route('/lmf/trp-discovery', methods=['POST'])
+def handle_trp_discovery():
+    """Manual trigger (testing / refresh): query all gNBs and return the TRP table."""
+    complete = lmf.query_trp_information()
+    trps = [dataclasses.asdict(e) for e in trp_table.snapshot()]
+    return jsonify({'complete': complete, 'trps': trps})
 
 # LMF LMF Broadcast Service Nlmf_Broadcast
 

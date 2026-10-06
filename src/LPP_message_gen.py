@@ -153,6 +153,7 @@ def read_gnb_cell_info(path):
         'mnc': mnc,
         'nr_cell_identity': find_int('nr_cellid', default=0),
         'tracking_area_code': find_int('tracking_area_code'),
+        'gnb_id': find_int('gNB_ID'),
     }
 
 def neighbouring_gnb_indices(serving_gnb_conf):
