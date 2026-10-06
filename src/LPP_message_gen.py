@@ -154,6 +154,7 @@ def read_gnb_cell_info(path):
         'nr_cell_identity': find_int('nr_cellid', default=0),
         'tracking_area_code': find_int('tracking_area_code'),
         'gnb_id': find_int('gNB_ID'),
+        'SSB_ARFCN': find_int('absoluteFrequencySSB')
     }
 
 def neighbouring_gnb_indices(serving_gnb_conf):
@@ -354,7 +355,7 @@ def _build_prs_resource_set(cfg, resource_set_id=4, scs=0, phys_cell_id=None):
 
     return resource_set
 
-def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_pci=None):
+def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_pci=None, trp_entries=None):
 
     match method:
 
@@ -506,24 +507,36 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
 
             for trp_index, cfg in prs_configs.items():
                 cell_info = read_gnb_cell_info(config.GNB_CONF_PATHS[trp_index])
+                #PCI and cell global identity: as reported by gNB over NRPPa if available
+                #otherwise, from gNB .conf file
+                entry = (trp_entries or {}).get(trp_index)
+                if entry is not None and entry.pci is not None and entry.nr_cell_id is not None:
+                    pci, mcc, mnc, nci = entry.pci, entry.mcc, entry.mnc, entry.nr_cell_id
+                    source = "TRP table"
+                else:
+                    pci, mcc, mnc, nci = (cell_info['PhysCellID'], cell_info['mcc'],
+                                          cell_info['mnc'], cell_info['nr_cell_identity'])
+                    source = ".conf"
+                log.logger_LPP.info(f"DL-TDoA assistance data: gNB index {trp_index}, PCI {pci}, "
+                                    f"cell {nci} (source: {source})")
                 resource_set = _build_prs_resource_set(
                     cfg,
                     resource_set_id=4,
                     scs=cell_info['SCS'],
-                    phys_cell_id=cell_info['PhysCellID'] 
+                    phys_cell_id=pci 
                 )
 
                 assistance_data_per_freq.append({
                     'dl-PRS-ID-r16': trp_index,
-                    'nr-PhysCellID-r16': cell_info['PhysCellID'],
+                    'nr-PhysCellID-r16': pci,
 
                     'nr-CellGlobalID-r16': {
-                        'mcc-r15': [int(d) for d in cell_info['mcc']],
-                        'mnc-r15': [int(d) for d in cell_info['mnc']],
-                        'nr-cellidentity-r15': (cell_info['nr_cell_identity'], 36)
+                        'mcc-r15': [int(d) for d in mcc],
+                        'mnc-r15': [int(d) for d in mnc],
+                        'nr-cellidentity-r15': (nci, 36)
                     },
 
-                    'nr-ARFCN-r16': cell_info['ARFCN'],
+                    'nr-ARFCN-r16': cell_info['SSB_ARFCN'],
 
                     'nr-DL-PRS-SFN0-Offset-r16': {
                         'sfn-Offset-r16': 0,

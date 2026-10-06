@@ -2,6 +2,7 @@ from pycrate_asn1dir import LPP
 import copy
 import custom_log as log
 import lmf_instance as lmf
+import trp_table
 import LPP_message_gen as lpp_gen
 import NRPPa_message_gen as nrppa_gen
 import NRPPa_handler 
@@ -280,8 +281,13 @@ def handle_request_assistance_data(body):
                         for items2 in BodyX:
                             log.logger_LPP.debug(f'Assistance data requested: {items2}')
 
+                        # On-demand TRP discovery: query the gNBs over NRPPa if the TRP table is
+                        # empty, stale or too old; on failure the .conf values are used instead
+                        if not trp_table.is_fresh():
+                            lmf.query_trp_information()
+                        trp_entries = {e.gnb_index: e for e in trp_table.snapshot() if e.gnb_index is not None}
                         result = lpp_gen.generate_lpp_provide_assistance_data(
-                            items, serving_pci=BodyX.get('nr-PhysCellID-r16'))
+                            items, serving_pci=BodyX.get('nr-PhysCellID-r16'), trp_entries=trp_entries)
                         log.logger_LPP.debug(f'Assistance data provided: {result}')
                     case _:
                         log.logger_LPP.error('No assistance data for this {items} method')
@@ -598,7 +604,7 @@ def handleLPP(lpp_message_asn):
                     try:
                         assistancedata = handle_request_assistance_data(first_value)
                     except:
-                        log.logger_LPP.error('Error during handle_request_assistance_data function', exec_info = True)
+                        log.logger_LPP.error('Error during handle_request_assistance_data function', exc_info = True)
                         ResponseLPP_Message_body = lpp_gen.generate_lpp_error("undefined")
                         endTransaction = True
                         assistancedata = 'error'
