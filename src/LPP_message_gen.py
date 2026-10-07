@@ -539,7 +539,8 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
                 prs_configs = {i: cfg for i, cfg in prs_configs.items() if i in keep}
             
             assistance_data_per_freq = []
-            used_cfgs = [] 
+            used_cfgs = []
+            ssb_configs = [] #one SSB configuration per reported TRP, the UE does not use this 
             for trp_index, cfg in prs_configs.items():
                 cell_info = read_gnb_cell_info(config.GNB_CONF_PATHS[trp_index])
                 entry = (trp_entries or {}).get(trp_index)
@@ -557,6 +558,16 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
                 else:
                     prs_source = "prs.conf"
                 used_cfgs.append(cfg)
+                ssb_configs.append({
+                    'nr-PhysCellID-r16': pci,
+                    'nr-ARFCN-r16': cell_info['SSB_ARFCN'],   # CD-SSB ARFCN, not Point A
+                    'ss-PBCH-BlockPower-r16': -25,
+                    'halfFrameIndex-r16': 1,
+                    'ssb-periodicity-r16': 'ms20',
+                    'ssb-PositionsInBurst-r16': ('mediumBitmap-r16', (1, 8)),
+                    'ssb-SubcarrierSpacing-r16': _prs_scs_name(cell_info['SCS']),
+                    'sfn-SSB-Offset-r16': 0
+                })
 
                 log.logger_LPP.info(f"DL-TDoA assistance data: gNB index {trp_index}, PCI {pci}, "
                                     f"cell {nci} (source: {source}), PRS (source: {prs_source})")
@@ -617,24 +628,9 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
                             'nr-DL-PRS-AssistanceDataPerFreq-r16': assistance_data_per_freq
                         }
                     ],
-                    'nr-SSB-Config-r16': [
-                        {
-                            'nr-PhysCellID-r16': cell_info['PhysCellID'],
-                            'nr-ARFCN-r16': cell_info['ARFCN'],
-                            'ss-PBCH-BlockPower-r16': -25,
-                            'halfFrameIndex-r16': 1,
-                            'ssb-periodicity-r16': 'ms20',
-                            'ssb-PositionsInBurst-r16': (
-                                'mediumBitmap-r16',
-                                (1, 8)
-                            ),
-                            # NOTE: dl-PRS-SubcarrierSpacing-r16 is a frequency-layer-level field (set 
-                            # once, not per-TRP), so this assumes all TRPs in prs.conf share the same
-                            # SCS -- true for all scenarios tested so far, but not enforced.
-                            'ssb-SubcarrierSpacing-r16': _prs_scs_name(cell_info['SCS']),
-                            'sfn-SSB-Offset-r16': 0
-                        }
-                    ]
+                    'nr-SSB-Config-r16': ssb_configs
+                        
+                    
                 },
 
                 'nr-SelectedDL-PRS-IndexList-r16': [
