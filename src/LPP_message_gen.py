@@ -355,6 +355,41 @@ def _build_prs_resource_set(cfg, resource_set_id=4, scs=0, phys_cell_id=None):
 
     return resource_set
 
+def _enum_number(name, prefix):
+    """Numeric value of an ASN.1 enumeration name as decoded by pycrate, e.g. ('n20', 'n') -> 20."""
+    if not name.startswith(prefix):
+        raise ValueError(f"unexpected enumeration value {name!r} (expected prefix {prefix!r})")
+    return int(name[len(prefix):])
+
+
+def prs_cfg_from_nrppa(prs):
+    """
+    Convert a PRS configuration reported over NRPPa (TS 38.455 PRSConfiguration, as decoded by
+    pycrate) into the format of read_prs_config(), so the LPP builders can use either source.
+    Only the first PRS resource set is used.
+    'PointA', 'StartPRB' and 'SCS' are frequency-layer values not present in prs.conf.
+    """
+    s = prs['pRSResourceSet-List'][0]
+    resources = s['pRSResource-List']
+    num_symbols = _enum_number(s['resourceNumberofSymbols'], 'n')
+    return {
+        'NumPRSResources': len(resources),
+        'PRSResourceSetPeriod': [_enum_number(s['resourceSetPeriodicity'], 'n'), s['resourceSetSlotOffset']],
+        'NumPRSSymbols': [num_symbols] * len(resources),
+        'PRSResourceRepetition': _enum_number(s['resourceRepetitionFactor'], 'rf'),
+        'PRSResourceTimeGap': _enum_number(s['resourceTimeGap'], 'tg'),
+        'NumRB': s['pRSbandwidth'] * 4 + 20,   # inverse of _prs_bandwidth(): 1 -> 24 PRBs
+        'RBOffset': s['startPRB'],
+        'CombSize': _enum_number(s['combSize'], 'n'),
+        'NPRS_ID': [r['sequenceID'] for r in resources],
+        'REOffset': [r['rEOffset'] for r in resources],
+        'PRSResourceOffset': [r['resourceSlotOffset'] for r in resources],
+        'SymbolStart': [r['resourceSymbolOffset'] for r in resources],
+        'PointA': s['pointA'],
+        'StartPRB': s['startPRB'],
+        'SCS': s['subcarrierSpacing'],
+    }
+
 def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_pci=None, trp_entries=None):
 
     match method:
@@ -363,7 +398,7 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
 
             prs_configs = read_prs_config()
             cfg = prs_configs[0]
-
+            cell_info = read_gnb_cell_info(config.GNB_CONF_PATH[0])
             resource_set = _build_prs_resource_set(
                 cfg,
                 resource_set_id=4,
@@ -504,28 +539,33 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
                 prs_configs = {i: cfg for i, cfg in prs_configs.items() if i in keep}
             
             assistance_data_per_freq = []
-
+            used_cfgs = [] 
             for trp_index, cfg in prs_configs.items():
                 cell_info = read_gnb_cell_info(config.GNB_CONF_PATHS[trp_index])
-                #PCI and cell global identity: as reported by gNB over NRPPa if available
-                #otherwise, from gNB .conf file
                 entry = (trp_entries or {}).get(trp_index)
-                if entry is not None and entry.pci is not None and entry.nr_cell_id is not None:
-                    pci, mcc, mnc, nci = entry.pci, entry.mcc, entry.mnc, entry.nr_cell_id
-                    source = "TRP table"
+
+                # PCI and cell global identity: reported by the gNB over NRPPa if available, else gNB .conf
+                if entry and entry.pci is not None and entry.nr_cell_id is not None:
+                    pci, mcc, mnc, nci, source = entry.pci, entry.mcc, entry.mnc, entry.nr_cell_id, "TRP table"
                 else:
-                    pci, mcc, mnc, nci = (cell_info['PhysCellID'], cell_info['mcc'],
-                                          cell_info['mnc'], cell_info['nr_cell_identity'])
-                    source = ".conf"
+                    pci, mcc, mnc, nci, source = (cell_info['PhysCellID'], cell_info['mcc'], cell_info['mnc'],
+                                                  cell_info['nr_cell_identity'], ".conf")
+
+                # PRS configuration: reported by the gNB over NRPPa if available, else prs.conf
+                if entry and entry.prs:
+                    cfg, prs_source = prs_cfg_from_nrppa(entry.prs), "TRP table"
+                else:
+                    prs_source = "prs.conf"
+                used_cfgs.append(cfg)
+
                 log.logger_LPP.info(f"DL-TDoA assistance data: gNB index {trp_index}, PCI {pci}, "
-                                    f"cell {nci} (source: {source})")
+                                    f"cell {nci} (source: {source}), PRS (source: {prs_source})")
                 resource_set = _build_prs_resource_set(
                     cfg,
                     resource_set_id=4,
                     scs=cell_info['SCS'],
-                    phys_cell_id=pci 
+                    phys_cell_id=pci
                 )
-
                 assistance_data_per_freq.append({
                     'dl-PRS-ID-r16': trp_index,
                     'nr-PhysCellID-r16': pci,
@@ -553,7 +593,7 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
                     'prs-OnlyTP-r16': 'true'
                 })
 
-            first_cfg = next(iter(prs_configs.values()))
+            first_cfg = used_cfgs[0]
             EFFECTIVE_NUM_RB = _effective_prs_bandwidth_rb(first_cfg['NumRB'])
             AssistanceDataDLTDOA = {
                 'nr-DL-PRS-AssistanceData-r16': {
@@ -565,11 +605,11 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
                     'nr-DL-PRS-AssistanceDataList-r16': [
                         {
                             'nr-DL-PRS-PositioningFrequencyLayer-r16': {
-                                'dl-PRS-SubcarrierSpacing-r16': 'kHz15',  # TODO: same as scs above
+                                'dl-PRS-SubcarrierSpacing-r16': first_cfg.get('SCS', 'kHz15'),
                                 'dl-PRS-ResourceBandwidth-r16':
                                     _prs_bandwidth(EFFECTIVE_NUM_RB),
-                                'dl-PRS-StartPRB-r16': 0,
-                                'dl-PRS-PointA-r16': cell_info['ARFCN'],
+                                'dl-PRS-StartPRB-r16': first_cfg.get('StartPRB', 0),
+                                'dl-PRS-PointA-r16': first_cfg.get('PointA', cell_info['ARFCN']),
                                 'dl-PRS-CombSizeN-r16':
                                     _prs_comb_size(first_cfg['CombSize']),
                                 'dl-PRS-CyclicPrefix-r16': 'normal'
