@@ -48,10 +48,10 @@ MaxAgeOfEstimation= 5
 #   200..255    used by TRP table queries (trp_table.py)
 TRP_TXN_MIN = 200
 TRP_TXN_MAX = 255
-# TRP information types requested from the gNBs. Only types the OAI gNB supports:
-# requesting any other type (e.g. 'pRSConfig') currently stops the gNB (AssertFatal).
-# 'pRSConfig' is to be added with the PRS work.
-TRP_INFO_TYPES = ['nrPCI', 'nG-RAN-CGI', 'arfcn', 'geoCoord']
+# TRP information types requested from the gNBs (TRPInformationTypeItem names, TS 38.455).
+# Only types supported by the OAI gNB: unsupported ones are answered with a TRP Information
+# Failure. 'pRSConfig' requires a prs_config section in each gNB .conf.
+TRP_INFO_TYPES = ['nrPCI', 'nG-RAN-CGI', 'arfcn', 'geoCoord', 'pRSConfig']
 # How long to wait for all gNBs to answer a TRP query (seconds)
 TRP_QUERY_TIMEOUT_S = 2.0
 
