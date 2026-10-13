@@ -531,13 +531,13 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
 
             prs_configs = read_prs_config()
 
-            if serving_gnb_conf is not None:
-                keep = set(neighbouring_gnb_indices(serving_gnb_conf))
-                prs_configs = {i: cfg for i, cfg in prs_configs.items() if i in keep}
-            elif serving_pci is not None:
-                keep = set(neighbouring_gnb_indices_by_pci(serving_pci))
-                prs_configs = {i: cfg for i, cfg in prs_configs.items() if i in keep}
-            
+            reference_id = next(iter(prs_configs))
+            if serving_pci is not None:
+                for i in prs_configs:
+                    if read_gnb_cell_info(config.GNB_CONF_PATHS[i])['PhysCellID'] == serving_pci:
+                        reference_id = i
+                        break
+            log.logger_LPP.info(f"DL-TDoA assistance data: reference TRP = gNB index {reference_id}")
             assistance_data_per_freq = []
             used_cfgs = []
             ssb_configs = [] #one SSB configuration per reported TRP, the UE does not use this 
@@ -609,7 +609,7 @@ def generate_lpp_provide_assistance_data(method, serving_gnb_conf=None, serving_
             AssistanceDataDLTDOA = {
                 'nr-DL-PRS-AssistanceData-r16': {
                     'nr-DL-PRS-ReferenceInfo-r16': {
-                        'dl-PRS-ID-r16': 0,
+                        'dl-PRS-ID-r16': reference_id,
                         'nr-DL-PRS-ResourceID-List-r16': [0]
                     },
 
