@@ -75,14 +75,20 @@ gNBPos= [{'x': 0,'y': 0},
          {'x': 300,'y':300}]
 
 import os
-# List of gNB .conf file paths, one per TRP, index-matched to prs.conf's
-# TRP indices (GNB_CONF_PATHS[0] corresponds to prs_config0, etc.).
-# Used to read real PhysCellID/ARFCN/SCS directly from each gNB's own
-# config, instead of duplicating these fields into prs.conf by hand.
+# gNB .conf files, one per TRP, in gNB index order and index-matched to
+# prs.conf's TRP indices (GNB_CONF_PATHS[0] corresponds to prs_config0, etc.).
+# Used to read the real PhysCellID/ARFCN/SCS from each gNB's own config.
+# GNB_CONF_DIR: directory containing the files.
+# GNB_CONF_FILES: optional comma-separated list of file names overriding the
+# defaults below.
 GNB_CONF_DIR = os.environ.get('GNB_CONF_DIR', '/LMF/gnb_confs')
 
-GNB_CONF_PATHS = [
-    os.path.join(GNB_CONF_DIR, "gnb0.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf"),
-    os.path.join(GNB_CONF_DIR, "gnb1.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf"),
-    os.path.join(GNB_CONF_DIR, "gnb2.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.multiru.conf"),
+DEFAULT_GNB_CONF_FILES = [
+    "gnb0.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.trace.multiru.conf",
+    "gnb1.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.trace.multiru.conf",
+    "gnb2.sa.band255.u0.25prb.rfsim.ntn-leo-RegenWithPRS.trace.multiru.conf",
 ]
+GNB_CONF_FILES = [f.strip() for f in
+                  (os.environ.get('GNB_CONF_FILES') or ','.join(DEFAULT_GNB_CONF_FILES)).split(',')
+                  if f.strip()]
+GNB_CONF_PATHS = [os.path.join(GNB_CONF_DIR, f) for f in GNB_CONF_FILES]

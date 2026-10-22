@@ -7,6 +7,8 @@ services:
     # pull_policy: always
     command: "/bin/bash start.sh"
     # command: sleep 999999
+    environment:
+      - GNB_CONF_FILES=${GNB_CONF_FILES:-}
     expose:
       - "4321"
     ports:
@@ -16,8 +18,7 @@ services:
       - "65001:65001" #exposing supl server port to make it reachable from the outside
     volumes:
       - ./envoy_proxy/envoy.yaml:/etc/envoy/envoy.yaml
-    #  - ${OAI_CONF_DIR}/ue.nr.prs.fr1.106prb.conf:/LMF/prs.conf:ro
-      - ${OAI_CONF_DIR}/ue.band255.3gnb.multiru.ntn-leo-RegenWithPRS.conf:/LMF/prs.conf:ro
+      - ${OAI_CONF_DIR}/${UE_PRS_CONF:-ue.band255.3gnb.multiru.ntn-leo-RegenWithPRS.trace.conf}:/LMF/prs.conf:ro
       - ${GNB_CONF_DIR}:/LMF/gnb_confs:ro
     restart: on-failure
     networks:
