@@ -132,7 +132,7 @@ class Lmf():
     amf_ip = config.AMF_IP
     amf_port = config.AMF_PORT
     lmf_ip = config.LMF_PUBLIC_IP
-    lmf_port = config.LMF_API_PORT
+    lmf_port = config.LMF_PORT
 
     def create(self, jdata, _transaction_number,method_preference):
         self.jdata = jdata
@@ -283,7 +283,7 @@ def _subscribe_non_ue_n2():
     body = {
         "anTypeList": ["3GPP_ACCESS"],
         "n2InformationClass": "NRPPa",
-        "n2NotifyCallbackUri": f"http://{config.LMF_PUBLIC_IP}:{config.LMF_API_PORT}/nlmf/notifyN2",
+        "n2NotifyCallbackUri": f"http://{config.LMF_PUBLIC_IP}:{config.LMF_PORT}/nlmf/notifyN2",
         "nfId": config.nfID
     }
     url = f"http://{config.AMF_IP}:{config.AMF_PORT}/namf-comm/v1/non-ue-n2-messages/subscriptions"

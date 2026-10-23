@@ -16,8 +16,8 @@ CN_Used= "OAI"
 
 match CN_Used:
     case "OAI": # IP/PORT FOR OAI core network
-        AMF_IP = "192.168.70.132"
-        AMF_PORT = 8080
+        AMF_IP = "127.0.0.1"
+        AMF_PORT = 9091
     case "free5gc":     # IP/PORT FOR free5gc
         AMF_IP = "10.100.200.50"
         AMF_PORT = 8000
